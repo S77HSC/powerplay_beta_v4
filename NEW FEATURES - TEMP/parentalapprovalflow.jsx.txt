@@ -1,0 +1,53 @@
+// Parental Approval Flow (React + Supabase example)
+import { useState } from "react";
+import { supabase } from "@/lib/supabaseClient";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+
+export default function ParentalApproval() {
+  const [childEmail, setChildEmail] = useState("");
+  const [parentEmail, setParentEmail] = useState("");
+  const [status, setStatus] = useState(null);
+
+  const handleSubmit = async () => {
+    setStatus("sending");
+
+    const { error } = await supabase.from("parent_links").insert({
+      child_email: childEmail,
+      parent_email: parentEmail,
+      status: "invited"
+    });
+
+    if (error) {
+      setStatus("error");
+    } else {
+      // send approval email logic could be handled by edge function or serverless API
+      setStatus("sent");
+    }
+  };
+
+  return (
+    <div className="max-w-md mx-auto p-4 space-y-4">
+      <h1 className="text-2xl font-bold">Parental Approval</h1>
+      <Input
+        placeholder="Child's Email"
+        value={childEmail}
+        onChange={(e) => setChildEmail(e.target.value)}
+      />
+      <Input
+        placeholder="Parent's Email"
+        value={parentEmail}
+        onChange={(e) => setParentEmail(e.target.value)}
+      />
+      <Button onClick={handleSubmit} disabled={status === "sending"}>
+        {status === "sending" ? "Sending..." : "Send Approval Request"}
+      </Button>
+      {status === "sent" && (
+        <p className="text-green-600">Approval email sent to parent!</p>
+      )}
+      {status === "error" && (
+        <p className="text-red-600">Failed to send approval. Try again.</p>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,340 @@
+"use client";
+
+import React, { useEffect, useRef, useState } from "react";
+import * as faceapi from "@vladmandic/face-api";
+
+// Camera capture modal
+function CameraSnapper({ open, onClose, onCapture, facingMode = "user" }) {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const [ready, setReady] = useState(false);
+  const [mode, setMode] = useState(facingMode);
+
+  useEffect(() => {
+    if (!open) { stop(); return; }
+    start(mode);
+    return stop;
+  }, [open, mode]);
+
+  async function start(facing) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: facing } },
+        audio: false,
+      });
+      streamRef.current = stream;
+      const v = videoRef.current;
+      if (v) {
+        v.srcObject = stream;
+        v.playsInline = true;
+        v.muted = true;
+        await v.play();
+        setReady(true);
+      }
+    } catch (e) {
+      console.error("Camera error:", e);
+      alert("Could not access camera. Check permissions.");
+      onClose?.();
+    }
+  }
+
+  function stop() {
+    setReady(false);
+    const s = streamRef.current;
+    s?.getTracks()?.forEach((t) => t.stop());
+    streamRef.current = null;
+  }
+
+  async function capture() {
+    const v = videoRef.current;
+    if (!v) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = v.videoWidth;
+    canvas.height = v.videoHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(v, 0, 0);
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.92));
+    const url = URL.createObjectURL(blob);
+    onCapture?.(blob, url);
+    onClose?.();
+  }
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+      <div className="bg-black rounded-xl border border-white/15 p-3 w-full max-w-md">
+        <div className="aspect-[3/4] bg-black/50 rounded overflow-hidden">
+          <video ref={videoRef} className="w-full h-full object-cover" />
+        </div>
+        <div className="mt-3 flex items-center justify-between">
+          <button
+            onClick={() => setMode((m) => (m === "user" ? "environment" : "user"))}
+            className="px-3 py-2 text-sm rounded bg-white/10 hover:bg-white/20"
+          >
+            Switch Camera
+          </button>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="px-3 py-2 text-sm rounded bg-white/10 hover:bg-white/20">
+              Cancel
+            </button>
+            <button
+              onClick={capture}
+              disabled={!ready}
+              className="px-3 py-2 text-sm rounded bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50"
+            >
+              Capture
+            </button>
+          </div>
+        </div>
+        <p className="text-xs text-white/60 mt-2">Tip: Works best over HTTPS and with camera permissions granted.</p>
+      </div>
+    </div>
+  );
+}
+
+// Face detection helper
+let modelsLoaded = false;
+async function ensureModels() {
+  if (modelsLoaded) return;
+  const url = "/models";
+  await faceapi.nets.tinyFaceDetector.loadFromUri(url);
+  await faceapi.nets.faceLandmark68TinyNet.loadFromUri(url);
+  modelsLoaded = true;
+}
+
+async function detectFace(domImg) {
+  await ensureModels();
+  const detection = await faceapi
+    .detectSingleFace(domImg, new faceapi.TinyFaceDetectorOptions())
+    .withFaceLandmarks(true);
+
+  if (!detection) return null;
+
+  const { box } = detection.detection;
+  const lm = detection.landmarks;
+  const le = avgPoint(lm.getLeftEye());
+  const re = avgPoint(lm.getRightEye());
+
+  const angleRad = Math.atan2(re.y - le.y, re.x - le.x);
+  const center = { x: (le.x + re.x) / 2, y: (le.y + re.y) / 2 };
+
+  return { center, angleRad, box };
+}
+
+function avgPoint(points) {
+  return {
+    x: points.reduce((s, p) => s + p.x, 0) / points.length,
+    y: points.reduce((s, p) => s + p.y, 0) / points.length,
+  };
+}
+
+function useImage(src) {
+  const [img, setImg] = useState(null);
+  useEffect(() => {
+    if (!src) { setImg(null); return; }
+    const i = new Image();
+    i.crossOrigin = "anonymous";
+    i.src = src;
+    i.onload = () => setImg(i);
+    i.onerror = () => setImg(null);
+  }, [src]);
+  return img;
+}
+
+function labelFromUrl(url = "") {
+  const base = url.split("/").pop()?.replace(/\.[a-z]+$/i, "") || "item";
+  return base.replace(/[_-]/g, " ");
+}
+
+export default function CharacterBuilder({
+  bodyUrl = "/LockerRoom/bodies/body1.png",
+  initialKitUrl = "/LockerRoom/kits/kit_home.png",
+  initialBootsUrl = "/LockerRoom/boots/power_red.png",
+  owned = {
+    kit: ["/LockerRoom/kits/kit_home.png"],
+    boots: ["/LockerRoom/boots/power_red.png"],
+    accessories: [],
+  },
+  catalog = {
+    kit: [
+      "/LockerRoom/kits/kit_home.png",
+      "/LockerRoom/kits/kit_away.png",
+      "/LockerRoom/kits/kit_legend.png",
+    ],
+    boots: [
+      "/LockerRoom/boots/power_red.png",
+      "/LockerRoom/boots/speed_blue.png",
+      "/LockerRoom/boots/legend_black.png",
+    ],
+    accessories: [],
+  },
+  onGearChange,
+  onExport,
+}) {
+  const [kitUrl, setKitUrl] = useState(initialKitUrl);
+  const [bootsUrl, setBootsUrl] = useState(initialBootsUrl);
+  const [accUrl, setAccUrl] = useState(null);
+
+  const [faceUrl, setFaceUrl] = useState(null);
+  const [faceX, setFaceX] = useState(256);
+  const [faceY, setFaceY] = useState(155);
+  const [faceScale, setFaceScale] = useState(1.1);
+  const [faceRot, setFaceRot] = useState(0);
+
+  const [cameraOpen, setCameraOpen] = useState(false);
+
+  const canvasRef = useRef(null);
+  const W = 512, H = 512;
+
+  const bodyImg = useImage(bodyUrl);
+  const kitImg = useImage(kitUrl);
+  const bootsImg = useImage(bootsUrl);
+  const accImg = useImage(accUrl);
+  const faceImg = useImage(faceUrl);
+
+  useEffect(() => { draw(); }, [bodyImg, kitImg, bootsImg, accImg, faceImg, faceX, faceY, faceScale, faceRot]);
+
+  function draw() {
+    const c = canvasRef.current;
+    if (!c) return;
+    c.width = W; c.height = H;
+    const ctx = c.getContext("2d");
+    ctx.clearRect(0, 0, W, H);
+    if (bodyImg) ctx.drawImage(bodyImg, 0, 0, W, H);
+    if (kitImg) ctx.drawImage(kitImg, 0, 0, W, H);
+    if (faceImg) {
+      const fw = 140 * faceScale;
+      const fh = 165 * faceScale;
+      ctx.save();
+      ctx.translate(faceX, faceY);
+      ctx.rotate((faceRot * Math.PI) / 180);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, fw / 2, fh / 2, 0, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(faceImg, -fw / 2, -fh / 2, fw, fh);
+      ctx.restore();
+    }
+    if (accImg) ctx.drawImage(accImg, 0, 0, W, H);
+    if (bootsImg) ctx.drawImage(bootsImg, 0, 0, W, H);
+  }
+
+  async function handleFaceUrl(url) {
+    setFaceUrl(url);
+    const tmp = new Image();
+    tmp.crossOrigin = "anonymous";
+    tmp.src = url;
+    tmp.onload = async () => {
+      const res = await detectFace(tmp);
+      if (!res) return;
+      const { box, angleRad } = res;
+      setFaceX(256);
+      setFaceY(155);
+      const desiredW = 140;
+      const s = (desiredW / box.width) * 1.6;
+      setFaceScale(Math.max(0.6, Math.min(2, s)));
+      setFaceRot((angleRad * 180) / Math.PI);
+    };
+  }
+
+  async function exportPng() {
+    const c = canvasRef.current;
+    if (!c) return;
+    const blob = await new Promise((res) => c.toBlob(res, "image/png"));
+    if (!blob) return;
+    const dl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = dl;
+    a.download = "avatar.png";
+    a.click();
+    URL.revokeObjectURL(dl);
+    onExport?.(blob, dl);
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <h2 className="text-xl font-bold text-yellow-400 text-right">Your PowerPlay Avatar</h2>
+
+      <div className="relative w-[300px] md:w-[360px] h-[500px] md:h-[560px] bg-black/50 border border-white/20 rounded-xl overflow-hidden self-end">
+        <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
+      </div>
+
+      <div className="self-end w-[300px] md:w-[360px] space-y-3 bg-black/40 p-3 rounded-xl border border-white/10">
+        <div className="flex items-center gap-2">
+          <label className="text-xs bg-white/10 hover:bg-white/20 px-2 py-1 rounded cursor-pointer">
+            Upload
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                handleFaceUrl(URL.createObjectURL(f));
+              }}
+            />
+          </label>
+          <button
+            onClick={() => setCameraOpen(true)}
+            className="text-xs bg-white/10 hover:bg-white/20 px-2 py-1 rounded"
+          >
+            Use Camera
+          </button>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2 text-[11px] text-white/70">
+          <label>X<input type="range" min="80" max="430" value={faceX} onChange={(e) => setFaceX(+e.target.value)} /></label>
+          <label>Y<input type="range" min="80" max="320" value={faceY} onChange={(e) => setFaceY(+e.target.value)} /></label>
+          <label>Scale<input type="range" min="0.6" max="2" step="0.01" value={faceScale} onChange={(e) => setFaceScale(+e.target.value)} /></label>
+          <label className="col-span-3">Rotate<input type="range" min="-20" max="20" step="0.5" value={faceRot} onChange={(e) => setFaceRot(+e.target.value)} /></label>
+        </div>
+
+        <div>
+          <div className="text-xs mb-1 text-white/80">Kit</div>
+          <div className="flex flex-wrap gap-2">
+            {catalog.kit.map((url) => {
+              const ownedIt = owned.kit.includes(url);
+              return (
+                <button
+                  key={url}
+                  onClick={() => ownedIt && setKitUrl(url)}
+                  className={`px-2 py-1 rounded text-xs border ${kitUrl === url ? "border-cyan-400" : "border-white/15"} ${ownedIt ? "" : "opacity-40 cursor-not-allowed"}`}
+                >
+                  {labelFromUrl(url)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs mb-1 text-white/80">Boots</div>
+          <div className="flex flex-wrap gap-2">
+            {catalog.boots.map((url) => {
+              const ownedIt = owned.boots.includes(url);
+              return (
+                <button
+                  key={url}
+                  onClick={() => ownedIt && setBootsUrl(url)}
+                  className={`px-2 py-1 rounded text-xs border ${bootsUrl === url ? "border-cyan-400" : "border-white/15"} ${ownedIt ? "" : "opacity-40 cursor-not-allowed"}`}
+                >
+                  {labelFromUrl(url)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <button onClick={exportPng} className="w-full bg-cyan-600 hover:bg-cyan-700 px-4 py-2 rounded font-semibold text-sm">
+          Export PNG
+        </button>
+      </div>
+
+      <CameraSnapper
+        open={cameraOpen}
+        onClose={() => setCameraOpen(false)}
+        onCapture={(blob, url) => handleFaceUrl(url)}
+      />
+    </div>
+  );
+}

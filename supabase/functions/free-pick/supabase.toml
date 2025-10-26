@@ -1,0 +1,7 @@
+# supabase/functions/free-pick/supabase.toml
+[functions.free-pick]
+# Using service-role inside the function, so do NOT require a JWT
+verify_jwt = false
+
+# (Optional) increase the timeout if your card-pick logic grows
+# timeout = 20

@@ -1,0 +1,53 @@
+// Serverless email handler (e.g. Supabase Edge Function or Vercel Serverless Function)
+// Sends an approval email to the parent with a unique approval token
+
+import { createClient } from '@supabase/supabase-js';
+import nodemailer from 'nodemailer';
+import crypto from 'crypto';
+
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).send('Method not allowed');
+
+  const { childEmail, parentEmail } = req.body;
+  const token = crypto.randomBytes(24).toString('hex');
+
+  // Store approval token
+  const { error } = await supabase.from('parent_links').update({
+    token,
+    token_expiry: new Date(Date.now() + 1000 * 60 * 60 * 24), // expires in 24h
+    status: 'pending'
+  }).eq('child_email', childEmail).eq('parent_email', parentEmail);
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  const approvalUrl = `https://yourdomain.com/parent/approve?token=${token}`;
+
+  // Send email
+  const transporter = nodemailer.createTransport({
+    service: 'Gmail', // or SendGrid, Mailgun, etc.
+    auth: {
+      user: process.env.MAIL_USER,
+      pass: process.env.MAIL_PASS,
+    },
+  });
+
+  const mailOptions = {
+    from: 'no-reply@powerplay.com',
+    to: parentEmail,
+    subject: 'Parental Approval Request – PowerPlay',
+    text: `Please click the following link to approve your child's account:
+
+${approvalUrl}
+
+This link expires in 24 hours.`
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    return res.status(200).json({ message: 'Email sent' });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+}

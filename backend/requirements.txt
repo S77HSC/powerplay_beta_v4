@@ -1,0 +1,6 @@
+ultralytics>=8.0.20,<9.0.0
+opencv-python>=4.10.0.82,<4.11.0.87
+numpy>=1.21
+fastapi
+uvicorn[standard]
+python-multipart

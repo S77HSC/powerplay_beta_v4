@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>PowerPlay Arena — M0 Baseline</title>
+<style>
+  html,body{height:100%;margin:0;background:#070d1b;overflow:hidden}
+  canvas{display:block}
+  #hud{position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:10;
+       color:#e8f1ff;font:700 16px/1 system-ui,Segoe UI,Inter,Arial;text-shadow:0 0 12px rgba(73,166,255,.9)}
+  #help{position:fixed;left:16px;bottom:14px;z-index:10;color:#b9c7ff;background:rgba(0,0,0,.35);
+        padding:6px 10px;border-radius:8px;font:600 12px/1.4 system-ui,Segoe UI,Inter,Arial;opacity:.9}
+  #power{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);width:320px;height:10px;
+         background:rgba(255,255,255,.08);border-radius:6px;overflow:hidden;box-shadow:0 0 0 1px rgba(255,255,255,.06) inset}
+  #bar{height:100%;width:0%;background:linear-gradient(90deg,#67e8f9,#60a5fa,#f472b6);box-shadow:0 0 16px rgba(124,231,255,.85)}
+</style>
+
+<script async src="https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.159.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.159.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hud">Blue <span id="sA">0</span> : <span id="sB">0</span> Magenta</div>
+<div id="help">Move: WASD/Arrows • Shoot (hold→release): Space • Pass: J • Tackle/Dash: H/Shift • Switch: Q • Reset: R</div>
+<div id="power"><div id="bar"></div></div>
+<canvas id="c"></canvas>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+const TUNE = {
+  field: { halfW: 12.0, halfL: 16.0 },
+  goal:  { halfZ: 3.2, depth: 2.2 },
+  ball:  { r: 0.46, damp: 5.0, bounceX: 0.86, bounceZ: 0.84 },
+  player:{ r: 0.46, max: 7.8 },
+  leash: { radius: 1.25, forward: 0.9, k: 22.0, firstTouch: 0.65 },
+  pass:  { speed: 10.5, lead: 0.35 },
+  shot:  { base: 7.5, extra: 18.0 },
+  tackle:{ power: 12.0, window: 0.18 },
+  cam:   { pos:[0,11.5,22], targetZ:-2, followX:0.20, followZ:0.08 },
+  bloom: { strength: 0.55, radius: 0.8, threshold: 0.55 }
+};
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true, powerPreference:'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.9;
+renderer.shadowMap.enabled = true;
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog('#070d1b', 24, 90);
+
+const camera = new THREE.PerspectiveCamera(43, innerWidth/innerHeight, 0.1, 220);
+camera.position.set(...TUNE.cam.pos);
+
+const env = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environment = env;
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enablePan = false; controls.minDistance = 12; controls.maxDistance = 26;
+controls.target.set(0, 0, TUNE.cam.targetZ);
+
+scene.add(new THREE.HemisphereLight('#cfe0ff', '#0b1120', 0.7));
+const dir = new THREE.DirectionalLight('#9fd6ff', 0.9); dir.position.set(6,9,10); dir.castShadow = true; scene.add(dir);
+const spotL = new THREE.SpotLight('#9fd6ff', 1.4, 70, 0.55, 0.6);
+const spotR = new THREE.SpotLight('#ff8ad2', 1.3, 70, 0.55, 0.6);
+spotL.position.set(-8,7.5,-6); spotR.position.set(8,7.5,-10);
+spotL.target.position.set(0,0,-6); spotR.target.position.set(0,0,-6);
+scene.add(spotL, spotL.target, spotR, spotR.target);
+
+const HALF_W = TUNE.field.halfW, HALF_L = TUNE.field.halfL;
+const GOAL_Z = TUNE.goal.halfZ, GOAL_D = TUNE.goal.depth;
+const BALL_R = TUNE.ball.r, PLAYER_R = TUNE.player.r;
+
+const arena = new THREE.Group(); arena.position.set(0,-1.25,0); scene.add(arena);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(HALF_W*2+2, HALF_L*2+4),
+  new THREE.MeshStandardMaterial({ color:'#0b1627', metalness:0.3, roughness:0.28, envMap:env, envMapIntensity:1.05 }));
+floor.rotation.x = -Math.PI/2; floor.receiveShadow = true; arena.add(floor);
+
+for (let i=0;i<3;i++){
+  const m = new THREE.Mesh(new THREE.BoxGeometry(HALF_W*2+2, .7, 5.6),
+    new THREE.MeshStandardMaterial({ color:'#0b172e', metalness:.15, roughness:.85, envMap:env, envMapIntensity:.6 }));
+  m.position.set(0, .35+i*.8, -6.2 - i*5.6);
+  m.castShadow = m.receiveShadow = true;
+  arena.add(m);
+}
+
+function neon(color, y, z, e=1.2){
+  const g = new THREE.Group(); g.position.set(0,y,z);
+  const mat = new THREE.MeshStandardMaterial({ color, emissive:color, emissiveIntensity:e, metalness:.2, roughness:.4 });
+  g.add(new THREE.Mesh(new THREE.BoxGeometry(HALF_W*2-1,.22,.6), mat));
+  const sL = new THREE.Mesh(new THREE.BoxGeometry(.22,10,.6), mat); sL.position.set(-HALF_W+0.5,5,0);
+  const sR = sL.clone(); sR.position.x = HALF_W-0.5; g.add(sL, sR);
+  arena.add(g);
+}
+neon('#40d1ff', 2.2, -5.2);
+neon('#ff56be', 1.8, -10.0, 1.0);
+
+for (let i=0;i<11;i++){
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(1.6,.14,.14),
+    new THREE.MeshStandardMaterial({ color:'#8ad8ff', emissive:'#8ad8ff', emissiveIntensity:0.75 }));
+  bar.position.set(-HALF_W+1 + i*((HALF_W*2-2)/10), 4.2, -5.2);
+  bar.castShadow = true; arena.add(bar);
+}
+
+const mid = new THREE.Mesh(new THREE.PlaneGeometry(.08, HALF_L*2), new THREE.MeshBasicMaterial({ color:'#b9ccff' }));
+mid.rotation.x = -Math.PI/2; mid.position.y = .001; arena.add(mid);
+const ring = new THREE.Mesh(new THREE.RingGeometry(3.0,3.2,64), new THREE.MeshBasicMaterial({ color:'#b9ccff', side:THREE.DoubleSide }));
+ring.rotation.x = -Math.PI/2; ring.position.y = .002; arena.add(ring);
+
+function makeNetMaterial(){
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const ctx = c.getContext('2d'); ctx.fillStyle='#000'; ctx.fillRect(0,0,256,256);
+  ctx.strokeStyle = 'rgba(255,255,255,0.38)'; ctx.lineWidth = 2;
+  for(let i=0;i<=256;i+=16){ ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,256); ctx.stroke();
+                              ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(256,i); ctx.stroke(); }
+  const tex = new THREE.CanvasTexture(c); tex.wrapS=tex.wrapT=THREE.RepeatWrapping; tex.repeat.set(1,1);
+  return new THREE.MeshBasicMaterial({ map: tex, transparent:true, opacity:0.55, side:THREE.DoubleSide });
+}
+const netMat = makeNetMaterial();
+
+function goalFrame(x, color){
+  const g = new THREE.Group(); g.position.set(x,0,0);
+  const mat = new THREE.MeshStandardMaterial({ color:'#e7f2ff', metalness:.2, roughness:.35, emissive:color, emissiveIntensity:0.28 });
+  const r = 0.12, h = 1.8;
+
+  const postL = new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,16),mat);
+  const postR = postL.clone();
+  postL.position.set(0, h/2, -GOAL_Z); postR.position.set(0, h/2,  GOAL_Z);
+  const bar = new THREE.Mesh(new THREE.CylinderGeometry(r,r, GOAL_Z*2,16),mat);
+  bar.rotation.z = Math.PI/2; bar.position.set(0, h, 0);
+
+  const backL = postL.clone(); const backR = postR.clone(); const backBar = bar.clone();
+  backL.position.x = backR.position.x = -Math.sign(x)*GOAL_D;
+  backBar.position.x = -Math.sign(x)*GOAL_D;
+
+  const railL = new THREE.Mesh(new THREE.CylinderGeometry(r,r, GOAL_D,16),mat);
+  const railR = railL.clone(); railL.rotation.z = Math.PI/2; railR.rotation.z = Math.PI/2;
+  railL.position.set(-Math.sign(x)*GOAL_D/2, h/2, -GOAL_Z);
+  railR.position.set(-Math.sign(x)*GOAL_D/2, h/2,  GOAL_Z);
+
+  const backNet = new THREE.Mesh(new THREE.PlaneGeometry(GOAL_Z*2, h), netMat);
+  backNet.position.set(-Math.sign(x)*GOAL_D, h/2, 0); backNet.rotation.y = Math.sign(x)*Math.PI/2;
+
+  const sideNetL = new THREE.Mesh(new THREE.PlaneGeometry(GOAL_D, h), netMat);
+  sideNetL.position.set(-Math.sign(x)*GOAL_D/2, h/2, -GOAL_Z);
+  sideNetL.rotation.y = Math.PI;
+  const sideNetR = sideNetL.clone(); sideNetR.position.z = GOAL_Z;
+
+  g.add(postL,postR,bar,backL,backR,backBar,railL,railR,backNet,sideNetL,sideNetR);
+  scene.add(g); return g;
+}
+goalFrame(-HALF_W-0.05, '#40d1ff');
+goalFrame( HALF_W+0.05, '#ff56be');
+
+function makePlayerModel(color){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.28, 0.55, 6, 12),
+    new THREE.MeshStandardMaterial({ color, metalness:.15, roughness:.5, emissive:color, emissiveIntensity:.18 }));
+  body.position.y = 0.6;
+
+  const shorts = new THREE.Mesh(new THREE.CylinderGeometry(0.3,0.3,0.28,16),
+    new THREE.MeshStandardMaterial({ color: new THREE.Color(color).multiplyScalar(0.6) }));
+  shorts.position.y = 0.36;
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.18, 16, 16),
+    new THREE.MeshStandardMaterial({ color:'#ffd7b3', metalness:0, roughness:1 }));
+  head.position.y = 1.05;
+
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(PLAYER_R, PLAYER_R, 0.14, 24),
+    new THREE.MeshStandardMaterial({ color: new THREE.Color(color).multiplyScalar(0.85), metalness:.2, roughness:.6, emissive:color, emissiveIntensity:.12 }));
+
+  g.add(base, body, shorts, head);
+  g.castShadow = g.receiveShadow = true;
+  return g;
+}
+
+function addPlayer(x,z,color){
+  const root = makePlayerModel(color);
+  root.position.set(x, 0.07, z);
+  scene.add(root);
+  return { root, max:TUNE.player.max, teamColor:color, isHuman:false };
+}
+
+const blue=[], magenta=[];
+blue.push(addPlayer(-4, 0, '#40d1ff')); blue[0].isHuman = true;
+blue.push(addPlayer(-6,-5.5, '#40d1ff'));
+blue.push(addPlayer(-8, 5.5, '#40d1ff'));
+blue.push(addPlayer(-10, 0, '#40d1ff'));
+
+magenta.push(addPlayer( 4, 0, '#ff56be'));
+magenta.push(addPlayer( 6,-5.5, '#ff56be'));
+magenta.push(addPlayer( 8, 5.5, '#ff56be'));
+magenta.push(addPlayer(10, 0, '#ff56be'));
+
+function makeKeeper(x, color){
+  const k = new THREE.Mesh(new THREE.BoxGeometry(.6,.6,2.6),
+    new THREE.MeshStandardMaterial({ color, metalness:0.2, roughness:0.6, emissive:color, emissiveIntensity:.2 }));
+  k.position.set(x, .3, 0); k.castShadow = k.receiveShadow = true; scene.add(k); return k;
+}
+const keeperA = makeKeeper(-HALF_W+0.9, '#40d1ff');
+const keeperB = makeKeeper( HALF_W-0.9, '#ff56be');
+
+const ball = new THREE.Mesh(
+  new THREE.SphereGeometry(BALL_R, 48, 48),
+  new THREE.MeshPhysicalMaterial({ color:'#ffffff', clearcoat:.95, clearcoatRoughness:.1, roughness:.3, metalness:.1, envMap:env, envMapIntensity:1.4 })
+);
+ball.castShadow = true; ball.position.set(0, .22, 0); scene.add(ball);
+new THREE.TextureLoader().load('/powerplay-assets/v3_ball_powerplay.png', t => {
+  t.colorSpace = THREE.SRGBColorSpace; ball.material.map = t; ball.material.needsUpdate = true;
+});
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), TUNE.bloom.strength, TUNE.bloom.radius, TUNE.bloom.threshold);
+composer.addPass(bloom);
+
+const sA = document.getElementById('sA'), sB = document.getElementById('sB'), bar = document.getElementById('bar');
+let scoreA=0, scoreB=0;
+
+let activeIdx = 0;
+let vBall = new THREE.Vector3();
+let input = { up:false,down:false,left:false,right:false };
+let moveDir = new THREE.Vector3(1,0,0);
+let charging=false, charge=0;
+let tackling=false, tackleT=0;
+
+const LEASH_RADIUS = TUNE.leash.radius;
+const LEASH_FORWARD= TUNE.leash.forward;
+const LEASH_K      = TUNE.leash.k;
+const FIRST_TOUCH  = TUNE.leash.firstTouch;
+
+addEventListener('keydown', e=>{
+  if (e.repeat) return;
+  const k=e.key.toLowerCase();
+  if (k==='arrowup'||k==='w') input.up=true;
+  if (k==='arrowdown'||k==='s') input.down=true;
+  if (k==='arrowleft'||k==='a') input.left=true;
+  if (k==='arrowright'||k==='d') input.right=true;
+  if (k===' ') charging=true;
+  if (k==='h' || k==='shift'){ tackling=true; tackleT=TUNE.tackle.window; }
+  if (k==='j') pass();
+  if (k==='q') switchHuman();
+  if (k==='r') kickoff(0);
+});
+addEventListener('keyup', e=>{
+  const k=e.key.toLowerCase();
+  if (k==='arrowup'||k==='w') input.up=false;
+  if (k==='arrowdown'||k==='s') input.down=false;
+  if (k==='arrowleft'||k==='a') input.left=false;
+  if (k==='arrowright'||k==='d') input.right=false;
+  if (k===' '){ fire(); charging=false; charge=0; bar.style.width='0%'; }
+});
+
+function switchHuman(){
+  blue[activeIdx].isHuman=false;
+  let best=0,bd=1e9;
+  for(let i=0;i<blue.length;i++){
+    const d = blue[i].root.position.distanceToSquared(ball.position);
+    if (d<bd){bd=d; best=i;}
+  }
+  activeIdx=best; blue[activeIdx].isHuman=true;
+}
+
+function pass(){
+  const me=blue[activeIdx];
+  let best=null,bd=1e9;
+  for(let i=0;i<blue.length;i++){
+    if(i===activeIdx) continue;
+    const p=blue[i].root.position;
+    if (p.x < me.root.position.x-0.2) continue;
+    const d=p.distanceToSquared(ball.position);
+    if(d<bd){bd=d; best=blue[i];}
+  }
+  if(!best){
+    for(let i=0;i<blue.length;i++){
+      if(i===activeIdx) continue;
+      const d=blue[i].root.position.distanceToSquared(ball.position);
+      if(d<bd){bd=d; best=blue[i];}
+    }
+  }
+  if(best){
+    const target = best.root.position.clone();
+    const dir=new THREE.Vector3().subVectors(target,ball.position).setY(0).normalize();
+    vBall.addScaledVector(dir, TUNE.pass.speed);
+  }
+}
+
+function fire(){
+  const goalRight = new THREE.Vector3(HALF_W+0.2, 0, (ball.position.z>0? GOAL_Z-0.2 : -GOAL_Z+0.2));
+  const towardsRight = new THREE.Vector3().subVectors(goalRight, ball.position).setY(0).normalize();
+  const blend = 0.35;
+  const dir = towardsRight.multiplyScalar(1-blend).add( moveDir.clone().normalize().multiplyScalar(blend) ).normalize();
+  const power = TUNE.shot.base + TUNE.shot.extra * charge;
+  vBall.addScaledVector(dir, power);
+}
+
+function clamp(v,min,max){return v<min?min:v>max?max:v;}
+function seek(entity,target,max=entity.max){
+  const desired=new THREE.Vector3().subVectors(target, entity.root.position).setY(0);
+  if(!desired.lengthSq()) return;
+  desired.normalize().multiplyScalar(max);
+  entity.root.position.x += desired.x*dt;
+  entity.root.position.z += desired.z*dt;
+  entity.root.position.x = clamp(entity.root.position.x, -HALF_W+PLAYER_R, HALF_W-PLAYER_R);
+  entity.root.position.z = clamp(entity.root.position.z, -HALF_L+PLAYER_R, HALF_L-PLAYER_R);
+}
+
+const DAMP=TUNE.ball.damp, BX=TUNE.ball.bounceX, BZ=TUNE.ball.bounceZ;
+
+function kickoff(dir){
+  ball.position.set(0,.22,0); vBall.set(dir*6,0,(Math.random()*2-1)*3);
+  const bx=[-4,-6,-8,-10], mx=[4,6,8,10], z=[0,-5.5,5.5,0];
+  for(let i=0;i<4;i++){
+    blue[i].root.position.set(bx[i],0.07,z[i]);
+    magenta[i].root.position.set(mx[i],0.07,z[i]);
+  }
+  switchHuman();
+}
+kickoff(0);
+
+const clock=new THREE.Clock(); let dt=0;
+(function animate(){
+  requestAnimationFrame(animate);
+  dt=Math.min(0.033, clock.getDelta());
+  const t=clock.getElapsedTime();
+
+  spotL.position.z = -6 + Math.cos(t*0.4)*2.2;
+  spotR.position.z = -6 + Math.sin(t*0.37)*2.2;
+  spotL.target.position.x = Math.sin(t*0.55)*6;
+  spotR.target.position.x = Math.sin(t*0.5+0.8)*6;
+
+  const me=blue[activeIdx];
+  const x=(input.right?1:0)-(input.left?1:0);
+  const z=(input.down?1:0)-(input.up?1:0);
+  const mv=new THREE.Vector3(x,0,z);
+  if(mv.lengthSq()){ mv.normalize().multiplyScalar(me.max); me.root.position.x+=mv.x*dt; me.root.position.z+=mv.z*dt; moveDir.copy(mv); }
+  me.root.position.x=clamp(me.root.position.x,-HALF_W+PLAYER_R,HALF_W-PLAYER_R);
+  me.root.position.z=clamp(me.root.position.z,-HALF_L+PLAYER_R,HALF_L-PLAYER_R);
+
+  if(charging){ charge=Math.min(1, charge+dt*0.8); bar.style.width=(charge*100).toFixed(1)+'%'; }
+  if(tackling){ tackleT-=dt; if(tackleT<=0) tackling=false; }
+
+  for(let i=0;i<blue.length;i++){
+    if(i===activeIdx) continue;
+    const p=blue[i], laneZ=i===1?-5.5:i===2?5.5:0;
+    const target=new THREE.Vector3(Math.min(ball.position.x-2,-2),0.07,laneZ);
+    seek(p,target,6.6);
+  }
+
+  let nearest=0,bd=1e9;
+  for(let i=0;i<magenta.length;i++){
+    const d=magenta[i].root.position.distanceToSquared(ball.position);
+    if(d<bd){bd=d; nearest=i;}
+  }
+  for(let i=0;i<magenta.length;i++){
+    const p=magenta[i];
+    if(i===nearest){
+      const inLane = (Math.abs(ball.position.z) < GOAL_Z-0.35);
+      const nearBox = (ball.position.x < -HALF_W + 2.2);
+      if (inLane && nearBox){
+        const dir = new THREE.Vector3(-1,0, (ball.position.z>0? -0.1:0.1)).normalize();
+        vBall.addScaledVector(dir, 14);
+      } else {
+        const target=new THREE.Vector3(Math.max(ball.position.x-1, -HALF_W+1.4),0.07, THREE.MathUtils.clamp(ball.position.z,-GOAL_Z+0.4,GOAL_Z-0.4));
+        seek(p,target,7.0);
+      }
+    } else {
+      const laneZ=i===1?-5.5:i===2?5.5:0;
+      const target=new THREE.Vector3(Math.max(ball.position.x+2,2),0.07,laneZ);
+      seek(p,target,6.2);
+    }
+  }
+
+  const toBall = new THREE.Vector3().subVectors(ball.position, me.root.position).setY(0);
+  if (toBall.length() < TUNE.leash.radius){
+    const fwd = moveDir.lengthSq()? moveDir.clone().normalize() : new THREE.Vector3(1,0,0);
+    const control = me.root.position.clone().add( fwd.multiplyScalar(TUNE.leash.forward) );
+    const delta = new THREE.Vector3().subVectors(control, ball.position).setY(0);
+    const approach = delta.length();
+    if (approach > 0.001){
+      vBall.addScaledVector(delta.normalize(), TUNE.leash.k * dt);
+      vBall.multiplyScalar(1 - TUNE.leash.firstTouch * dt);
+    }
+  }
+
+  if(tackling){
+    const d = me.root.position.distanceTo(ball.position);
+    if(d < 1.15){ 
+      const dir = new THREE.Vector3().subVectors(ball.position, me.root.position).setY(0).normalize();
+      vBall.addScaledVector(dir, TUNE.tackle.power);
+      tackling=false;
+    }
+  }
+
+  vBall.multiplyScalar(Math.max(0,1-DAMP*dt));
+  ball.position.x += vBall.x*dt;
+  ball.position.z += vBall.z*dt;
+
+  const inMouth = Math.abs(ball.position.z) < GOAL_Z;
+  if (ball.position.x < -HALF_W-BALL_R && inMouth){ scoreB++; sB.textContent=scoreB; kickoff(1); }
+  else if (ball.position.x > HALF_W+BALL_R && inMouth){ scoreA++; sA.textContent=scoreA; kickoff(-1); }
+
+  if (ball.position.x < -HALF_W+BALL_R && !inMouth){ ball.position.x=-HALF_W+BALL_R; vBall.x*=-TUNE.ball.bounceX; }
+  if (ball.position.x >  HALF_W-BALL_R && !inMouth){ ball.position.x= HALF_W-BALL_R; vBall.x*=-TUNE.ball.bounceX; }
+  if (ball.position.z < -HALF_L+BALL_R){ ball.position.z=-HALF_L+BALL_R; vBall.z*=-TUNE.ball.bounceZ; }
+  if (ball.position.z >  HALF_L-BALL_R){ ball.position.z= HALF_L-BALL_R; vBall.z*=-TUNE.ball.bounceZ; }
+
+  function collideTeam(team){
+    for(const p of team){
+      const d = new THREE.Vector3().subVectors(ball.position, p.root.position); d.y=0;
+      const dist = d.length(), minD = PLAYER_R + BALL_R;
+      if (dist < minD){
+        const n = dist>0.0001 ? d.multiplyScalar(1/dist) : new THREE.Vector3(1,0,0);
+        ball.position.addScaledVector(n, (minD-dist)+0.001);
+        vBall.addScaledVector(n, 7.5);
+      }
+    }
+  }
+  collideTeam(blue); collideTeam(magenta);
+
+  function keeperStep(k){
+    k.position.z += THREE.MathUtils.clamp(ball.position.z - k.position.z, -6*dt, 6*dt);
+    k.position.z = THREE.MathUtils.clamp(k.position.z, -GOAL_Z, GOAL_Z);
+    const dx = Math.abs(ball.position.x - k.position.x) - (0.3 + BALL_R);
+    const dz = Math.abs(ball.position.z - k.position.z) - (1.3 + BALL_R);
+    if (dx < 0 && dz < 0){
+      const n = new THREE.Vector3(Math.sign(ball.position.x - k.position.x), 0, Math.sign(ball.position.z - k.position.z));
+      vBall.addScaledVector(n, 10);
+    }
+  }
+  keeperStep(keeperA); keeperStep(keeperB);
+
+  const camTarget = new THREE.Vector3(ball.position.x*TUNE.cam.followX, 0, TUNE.cam.targetZ + ball.position.z*TUNE.cam.followZ);
+  controls.target.lerp(camTarget, 1 - Math.pow(0.001, dt));
+  camera.position.lerp(new THREE.Vector3(...TUNE.cam.pos).add(new THREE.Vector3(ball.position.x*0.06,0,ball.position.z*0.06)), 1 - Math.pow(0.001, dt));
+
+  controls.update();
+  composer.render();
+})();
+
+addEventListener('resize', ()=>{
+  const w=innerWidth,h=innerHeight;
+  renderer.setSize(w,h); composer.setSize(w,h);
+  camera.aspect=w/h; camera.updateProjectionMatrix();
+});
+</script>
+</body>
+</html>

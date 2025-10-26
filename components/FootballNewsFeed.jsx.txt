@@ -1,0 +1,42 @@
+// FootballNewsFeed.jsx
+import React, { useEffect, useState } from 'react';
+
+function FootballNewsFeed() {
+  const [news, setNews] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/football-news')
+      .then(res => res.json())
+      .then(data => {
+        setNews(data);
+        setLoading(false);
+      })
+      .catch(err => {
+        console.error('Error fetching news:', err);
+        setLoading(false);
+      });
+  }, []);
+
+  if (loading) return <div>Loading live football news...</div>;
+
+  return (
+    <div className="football-news-feed">
+      <h2>Live Football News</h2>
+      <ul>
+        {news.map((item, index) => (
+          <li key={index} style={{ marginBottom: '1rem' }}>
+            <a href={item.link} target="_blank" rel="noopener noreferrer">
+              <strong>{item.title}</strong>
+            </a>
+            <div style={{ fontSize: '0.8em', color: '#aaa' }}>
+              {new Date(item.pubDate).toLocaleString()} — {item.source}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default FootballNewsFeed;

@@ -1,0 +1,839 @@
+"use client"
+
+import type React from "react"
+
+import { useRef, useEffect, useState, useCallback } from "react"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Camera, Square, Play, Pause, RotateCcw, Target } from "lucide-react"
+import CalibrationGuide from "./calibration-guide"
+
+interface Detection {
+  x: number
+  y: number
+  width: number
+  height: number
+  confidence: number
+  class: string
+}
+
+interface TouchEvent {
+  timestamp: number
+  position: { x: number; y: number }
+  confidence: number
+}
+
+export default function WebcamDetection() {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const animationRef = useRef<number>()
+  const inferenceWorkerRef = useRef<Worker | null>(null)
+
+  const [isActive, setIsActive] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
+  const [touchCount, setTouchCount] = useState(0)
+  const [currentFPS, setCurrentFPS] = useState(0)
+  const [lastDetection, setLastDetection] = useState<Detection | null>(null)
+  const [recentTouches, setRecentTouches] = useState<TouchEvent[]>([])
+  const [modelLoaded, setModelLoaded] = useState(false)
+
+  const [isCalibrating, setIsCalibrating] = useState(false)
+  const [calibratedBall, setCalibratedBall] = useState<Detection | null>(null)
+  const [calibrationStep, setCalibrationStep] = useState<"idle" | "detecting" | "selecting" | "confirmed">("idle")
+  const [detectedBalls, setDetectedBalls] = useState<Detection[]>([])
+
+  const [debugMode, setDebugMode] = useState(true) // Enable debug by default
+  const [detectionStatus, setDetectionStatus] = useState<string>("Ready")
+
+  const [isManualPicking, setIsManualPicking] = useState(false)
+  const [clickPosition, setClickPosition] = useState<{ x: number; y: number } | null>(null)
+  const canvasClickRef = useRef<HTMLCanvasElement>(null)
+
+  // Add these new state variables after the existing ones
+  const [isDragging, setIsDragging] = useState(false)
+  const [isResizing, setIsResizing] = useState(false)
+  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null)
+  const [calibrationBox, setCalibrationBox] = useState<Detection | null>(null)
+  const [showCalibrationBox, setShowCalibrationBox] = useState(false)
+
+  // Performance optimization - reduce frame rate
+  const lastFrameTime = useRef(0)
+  const TARGET_FPS = 15
+
+  // Touch detection parameters
+  const getMovementThreshold = useCallback((ballSize: number) => {
+    return Math.max(15, Math.min(60, ballSize * 0.6))
+  }, [])
+
+  const CONFIDENCE_THRESHOLD = 0.3 // Lowered threshold
+  const TOUCH_COOLDOWN = 800 // Increased cooldown
+
+  const lastTouchTime = useRef(0)
+  const lastPosition = useRef<{ x: number; y: number } | null>(null)
+  const trackingHistory = useRef<{ x: number; y: number; timestamp: number }[]>([])
+
+  // Initialize webcam
+  const initializeWebcam = useCallback(async () => {
+    try {
+      setIsLoading(true)
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 480 },
+          height: { ideal: 360 },
+          facingMode: "environment",
+          frameRate: { ideal: 15, max: 20 },
+        },
+      })
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        streamRef.current = stream
+        await videoRef.current.play()
+      }
+
+      setIsLoading(false)
+      return true
+    } catch (error) {
+      console.error("Error accessing webcam:", error)
+      setIsLoading(false)
+      return false
+    }
+  }, [])
+
+  // Initialize inference worker (simulated)
+  const initializeInference = useCallback(() => {
+    setTimeout(() => {
+      setModelLoaded(true)
+    }, 1000)
+  }, [])
+
+  const selectBallForCalibration = useCallback((selectedBall: Detection) => {
+    setCalibratedBall(selectedBall)
+    setCalibrationStep("confirmed")
+    setDetectedBalls([])
+  }, [])
+
+  const resetCalibration = useCallback(() => {
+    setCalibratedBall(null)
+    setCalibrationStep("idle")
+    setIsCalibrating(false)
+    setDetectedBalls([])
+    setIsManualPicking(false)
+    setCalibrationBox(null)
+    lastPosition.current = null
+    trackingHistory.current = []
+  }, [])
+
+  const handleCanvasMouseDown = useCallback(
+    (event: React.MouseEvent<HTMLCanvasElement>) => {
+      if (!isManualPicking || !canvasRef.current || !calibrationBox) return
+
+      const canvas = canvasRef.current
+      const rect = canvas.getBoundingClientRect()
+      const scaleX = canvas.width / rect.width
+      const scaleY = canvas.height / rect.height
+
+      const x = (event.clientX - rect.left) * scaleX
+      const y = (event.clientY - rect.top) * scaleY
+
+      const handleSize = 15
+      const handleX = calibrationBox.x + calibrationBox.width - handleSize
+      const handleY = calibrationBox.y + calibrationBox.height - handleSize
+
+      if (x >= handleX && x <= handleX + handleSize && y >= handleY && y <= handleY + handleSize) {
+        setIsResizing(true)
+        setDragStart({ x, y })
+      } else if (
+        x >= calibrationBox.x &&
+        x <= calibrationBox.x + calibrationBox.width &&
+        y >= calibrationBox.y &&
+        y <= calibrationBox.y + calibrationBox.height
+      ) {
+        setIsDragging(true)
+        setDragStart({ x: x - calibrationBox.x, y: y - calibrationBox.y })
+      }
+    },
+    [isManualPicking, calibrationBox],
+  )
+
+  const handleCanvasMouseMove = useCallback(
+    (event: React.MouseEvent<HTMLCanvasElement>) => {
+      if (!isManualPicking || !canvasRef.current || !calibrationBox) return
+
+      const canvas = canvasRef.current
+      const rect = canvas.getBoundingClientRect()
+      const scaleX = canvas.width / rect.width
+      const scaleY = canvas.height / rect.height
+
+      const x = (event.clientX - rect.left) * scaleX
+      const y = (event.clientY - rect.top) * scaleY
+
+      if (isDragging && dragStart) {
+        setCalibrationBox({
+          ...calibrationBox,
+          x: x - dragStart.x,
+          y: y - dragStart.y,
+        })
+      } else if (isResizing && dragStart) {
+        const newWidth = Math.max(20, x - calibrationBox.x)
+        const newHeight = Math.max(20, y - calibrationBox.y)
+        setCalibrationBox({
+          ...calibrationBox,
+          width: newWidth,
+          height: newHeight,
+        })
+      }
+    },
+    [isManualPicking, calibrationBox, isDragging, isResizing, dragStart],
+  )
+
+  const handleCanvasMouseUp = useCallback(() => {
+    setIsDragging(false)
+    setIsResizing(false)
+    setDragStart(null)
+  }, [])
+
+  const confirmCalibration = useCallback(() => {
+    if (calibrationBox) {
+      setCalibratedBall(calibrationBox)
+      setCalibrationStep("confirmed")
+      setIsManualPicking(false)
+      setShowCalibrationBox(false)
+      setDetectionStatus(
+        `Ball calibrated at (${Math.round(calibrationBox.x)}, ${Math.round(calibrationBox.y)}) size ${Math.round(calibrationBox.width)}x${Math.round(calibrationBox.height)}`,
+      )
+    }
+  }, [calibrationBox])
+
+  const cancelCalibration = useCallback(() => {
+    setCalibrationBox(null)
+    setShowCalibrationBox(false)
+    setIsDragging(false)
+    setIsResizing(false)
+    setDragStart(null)
+    setIsManualPicking(false)
+    setIsCalibrating(false)
+  }, [])
+
+  const startManualPicking = useCallback(async () => {
+    const webcamInitialized = await initializeWebcam()
+    if (webcamInitialized) {
+      setIsCalibrating(true)
+      setIsManualPicking(true)
+      setCalibrationStep("detecting")
+      setDetectionStatus("Position the green box over your football")
+
+      const initialBox: Detection = {
+        x: 150,
+        y: 120,
+        width: 80,
+        height: 80,
+        confidence: 0.95,
+        class: "football",
+      }
+
+      setCalibrationBox(initialBox)
+      setShowCalibrationBox(true)
+      initializeInference()
+    }
+  }, [initializeWebcam, initializeInference])
+
+  // Simplified tracking that just follows bright areas
+  const runInference = useCallback(
+    (imageData: ImageData): Detection[] => {
+      const detections: Detection[] = []
+
+      if (isManualPicking) {
+        return detections
+      }
+
+      if (isCalibrating && calibrationStep === "detecting") {
+        // Simple calibration detection - just return some dummy detections
+        const dummyDetections: Detection[] = [
+          {
+            x: 100,
+            y: 100,
+            width: 60,
+            height: 60,
+            confidence: 0.8,
+            class: "football",
+          },
+          {
+            x: 200,
+            y: 150,
+            width: 70,
+            height: 70,
+            confidence: 0.7,
+            class: "football",
+          },
+        ]
+
+        setDetectedBalls(dummyDetections)
+        setDetectionStatus(`Found ${dummyDetections.length} potential football(s) - Select one below`)
+        setTimeout(() => setCalibrationStep("selecting"), 500)
+        return dummyDetections
+      } else if (isActive && calibratedBall) {
+        // VERY SIMPLE tracking - just look for any bright area in a large search zone
+
+        const currentCenter = lastPosition.current || {
+          x: calibratedBall.x + calibratedBall.width / 2,
+          y: calibratedBall.y + calibratedBall.height / 2,
+        }
+
+        // HUGE search area - half the screen
+        const searchRadius = Math.max(imageData.width, imageData.height) / 4
+        const searchArea = {
+          x: Math.max(0, currentCenter.x - searchRadius),
+          y: Math.max(0, currentCenter.y - searchRadius),
+          width: Math.min(imageData.width, searchRadius * 2),
+          height: Math.min(imageData.height, searchRadius * 2),
+        }
+
+        let bestX = currentCenter.x
+        let bestY = currentCenter.y
+        let maxBrightness = 0
+        let foundSomething = false
+
+        // Very simple brightness detection with large steps
+        const step = 8
+        for (let y = searchArea.y; y < searchArea.y + searchArea.height; y += step) {
+          for (let x = searchArea.x; x < searchArea.x + searchArea.width; x += step) {
+            if (x >= 0 && x < imageData.width && y >= 0 && y < imageData.height) {
+              const idx = (y * imageData.width + x) * 4
+              const brightness =
+                0.299 * imageData.data[idx] + 0.587 * imageData.data[idx + 1] + 0.114 * imageData.data[idx + 2]
+
+              if (brightness > maxBrightness && brightness > 100) {
+                // Very low threshold
+                maxBrightness = brightness
+                bestX = x
+                bestY = y
+                foundSomething = true
+              }
+            }
+          }
+        }
+
+        // Always update position if we found something brighter
+        if (foundSomething) {
+          lastPosition.current = { x: bestX, y: bestY }
+
+          // Add to tracking history
+          trackingHistory.current.push({
+            x: bestX,
+            y: bestY,
+            timestamp: Date.now(),
+          })
+
+          // Keep only last 10 positions
+          if (trackingHistory.current.length > 10) {
+            trackingHistory.current = trackingHistory.current.slice(-10)
+          }
+        }
+
+        const confidence = foundSomething ? Math.min(0.9, maxBrightness / 255) : 0.3
+
+        const detection: Detection = {
+          x: bestX - calibratedBall.width / 2,
+          y: bestY - calibratedBall.height / 2,
+          width: calibratedBall.width,
+          height: calibratedBall.height,
+          confidence: confidence,
+          class: "football",
+        }
+
+        detections.push(detection)
+
+        setDetectionStatus(
+          `Tracking: brightness=${maxBrightness.toFixed(0)}, pos=(${bestX.toFixed(0)}, ${bestY.toFixed(0)}), search=${Math.round(searchRadius)}px`,
+        )
+      }
+
+      return detections
+    },
+    [isCalibrating, calibrationStep, isActive, calibratedBall, isManualPicking],
+  )
+
+  // Touch detection logic
+  const detectTouch = useCallback(
+    (detection: Detection) => {
+      const currentTime = Date.now()
+      const currentPosition = {
+        x: detection.x + detection.width / 2,
+        y: detection.y + detection.height / 2,
+      }
+
+      const adaptiveThreshold = getMovementThreshold(detection.width)
+
+      if (currentTime - lastTouchTime.current < TOUCH_COOLDOWN) {
+        return false
+      }
+
+      if (lastPosition.current) {
+        const distance = Math.sqrt(
+          Math.pow(currentPosition.x - lastPosition.current.x, 2) +
+            Math.pow(currentPosition.y - lastPosition.current.y, 2),
+        )
+
+        if (distance > adaptiveThreshold) {
+          lastTouchTime.current = currentTime
+
+          const touchEvent: TouchEvent = {
+            timestamp: currentTime,
+            position: currentPosition,
+            confidence: detection.confidence,
+          }
+
+          setRecentTouches((prev) => [...prev.slice(-4), touchEvent])
+          setTouchCount((prev) => prev + 1)
+
+          console.log(`TOUCH! Distance: ${distance.toFixed(1)}px, Threshold: ${adaptiveThreshold}px`)
+          return true
+        }
+      }
+
+      return false
+    },
+    [getMovementThreshold],
+  )
+
+  // Processing loop
+  const processFrame = useCallback(() => {
+    if (!videoRef.current || !canvasRef.current || (!isActive && !isCalibrating) || !modelLoaded) {
+      return
+    }
+
+    const now = performance.now()
+
+    if (now - lastFrameTime.current < 1000 / TARGET_FPS) {
+      animationRef.current = requestAnimationFrame(processFrame)
+      return
+    }
+    lastFrameTime.current = now
+
+    const video = videoRef.current
+    const canvas = canvasRef.current
+
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+
+    const ctx = canvas.getContext("2d", { willReadFrequently: true })
+
+    if (!ctx || video.videoWidth === 0) {
+      animationRef.current = requestAnimationFrame(processFrame)
+      return
+    }
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+    let detections: Detection[] = []
+    if (!isManualPicking) {
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+      detections = runInference(imageData)
+    }
+
+    // Draw calibration detections
+    if (isCalibrating && calibrationStep === "detecting" && !isManualPicking) {
+      detections.forEach((detection, index) => {
+        ctx.strokeStyle = "#ffff00"
+        ctx.lineWidth = 3
+        ctx.strokeRect(detection.x, detection.y, detection.width, detection.height)
+        ctx.fillStyle = "#ffff00"
+        ctx.font = "16px Arial"
+        ctx.fillText(`Ball ${index + 1}`, detection.x, detection.y - 10)
+      })
+
+      if (detections.length > 0) {
+        setCalibrationStep("selecting")
+      }
+    }
+
+    // Draw active tracking
+    if (isActive && calibratedBall) {
+      detections.forEach((detection) => {
+        if (detection.class === "football") {
+          setLastDetection(detection)
+          detectTouch(detection)
+
+          // Always bright green for visibility
+          const color = "#00FF00"
+
+          ctx.strokeStyle = color
+          ctx.lineWidth = 4
+          ctx.strokeRect(detection.x, detection.y, detection.width, detection.height)
+
+          ctx.fillStyle = color
+          ctx.font = "16px Arial"
+          ctx.fillText(`TRACKING`, detection.x, detection.y - 10)
+
+          // Show position info
+          ctx.font = "12px Arial"
+          ctx.fillText(
+            `Pos: ${Math.round(detection.x + detection.width / 2)}, ${Math.round(detection.y + detection.height / 2)}`,
+            detection.x,
+            detection.y + detection.height + 15,
+          )
+        }
+      })
+
+      // Draw search area for debugging
+      if (debugMode && lastPosition.current) {
+        const searchRadius = Math.max(canvas.width, canvas.height) / 4
+        ctx.strokeStyle = "rgba(255, 0, 0, 0.5)"
+        ctx.lineWidth = 2
+        ctx.strokeRect(
+          lastPosition.current.x - searchRadius,
+          lastPosition.current.y - searchRadius,
+          searchRadius * 2,
+          searchRadius * 2,
+        )
+
+        // Draw tracking history
+        ctx.fillStyle = "rgba(255, 255, 0, 0.8)"
+        trackingHistory.current.forEach((pos, index) => {
+          const size = 3 + index
+          ctx.fillRect(pos.x - size / 2, pos.y - size / 2, size, size)
+        })
+      }
+    }
+
+    // Draw manual picking interface
+    if (isManualPicking && calibrationBox && ctx) {
+      ctx.fillStyle = "rgba(0, 255, 0, 0.4)"
+      ctx.fillRect(calibrationBox.x, calibrationBox.y, calibrationBox.width, calibrationBox.height)
+
+      ctx.strokeStyle = "#00FF00"
+      ctx.lineWidth = 4
+      ctx.strokeRect(calibrationBox.x, calibrationBox.y, calibrationBox.width, calibrationBox.height)
+
+      const handleSize = 15
+      const handleX = calibrationBox.x + calibrationBox.width - handleSize
+      const handleY = calibrationBox.y + calibrationBox.height - handleSize
+      ctx.fillStyle = "#FF0000"
+      ctx.fillRect(handleX, handleY, handleSize, handleSize)
+
+      const centerX = calibrationBox.x + calibrationBox.width / 2
+      const centerY = calibrationBox.y + calibrationBox.height / 2
+      ctx.strokeStyle = "#FFFFFF"
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(centerX - 10, centerY)
+      ctx.lineTo(centerX + 10, centerY)
+      ctx.moveTo(centerX, centerY - 10)
+      ctx.lineTo(centerX, centerY + 10)
+      ctx.stroke()
+
+      ctx.fillStyle = "rgba(0, 0, 0, 0.8)"
+      ctx.fillRect(10, 10, 300, 40)
+      ctx.fillStyle = "#FFFFFF"
+      ctx.font = "14px Arial"
+      ctx.fillText("Drag to move, red corner to resize", 15, 30)
+    }
+
+    setCurrentFPS(Math.round(1000 / (now - (processFrame as any).lastTime || 16)))
+    ;(processFrame as any).lastTime = now
+
+    animationRef.current = requestAnimationFrame(processFrame)
+  }, [
+    isActive,
+    isCalibrating,
+    calibrationStep,
+    modelLoaded,
+    runInference,
+    detectTouch,
+    isManualPicking,
+    calibrationBox,
+    calibratedBall,
+    debugMode,
+  ])
+
+  const startCalibration = useCallback(async () => {
+    const webcamInitialized = await initializeWebcam()
+    if (webcamInitialized) {
+      setIsCalibrating(true)
+      setCalibrationStep("detecting")
+      initializeInference()
+    }
+  }, [initializeWebcam, initializeInference])
+
+  const startDetection = useCallback(() => {
+    if (calibratedBall) {
+      // Initialize tracking position
+      lastPosition.current = {
+        x: calibratedBall.x + calibratedBall.width / 2,
+        y: calibratedBall.y + calibratedBall.height / 2,
+      }
+      trackingHistory.current = [
+        {
+          x: lastPosition.current.x,
+          y: lastPosition.current.y,
+          timestamp: Date.now(),
+        },
+      ]
+      setIsActive(true)
+      setIsCalibrating(false)
+      setCalibrationStep("idle")
+      setDetectionStatus("Starting simple brightness tracking...")
+    }
+  }, [calibratedBall])
+
+  const stopDetection = useCallback(() => {
+    setIsActive(false)
+    setIsCalibrating(false)
+    setIsManualPicking(false)
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current)
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+    }
+  }, [])
+
+  const resetCounters = useCallback(() => {
+    setTouchCount(0)
+    setRecentTouches([])
+    lastTouchTime.current = 0
+    lastPosition.current = null
+    trackingHistory.current = []
+  }, [])
+
+  useEffect(() => {
+    if ((isActive || isCalibrating) && modelLoaded) {
+      processFrame()
+    }
+    return () => {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current)
+      }
+    }
+  }, [isActive, isCalibrating, modelLoaded, processFrame])
+
+  useEffect(() => {
+    return () => {
+      stopDetection()
+    }
+  }, [stopDetection])
+
+  return (
+    <div className="w-full max-w-4xl mx-auto p-4 space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Camera className="w-5 h-5" />
+            Football Touch Detection - Simple Tracking
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Control Buttons */}
+          <div className="flex gap-2 flex-wrap">
+            {!calibratedBall ? (
+              <>
+                <Button
+                  onClick={isCalibrating ? stopDetection : startCalibration}
+                  disabled={isLoading}
+                  className="flex items-center gap-2"
+                  variant={isManualPicking ? "outline" : "default"}
+                >
+                  <Camera className="w-4 h-4" />
+                  {isLoading
+                    ? "Loading..."
+                    : isCalibrating && !isManualPicking
+                      ? "Stop Auto Detection"
+                      : "Auto Detect Ball"}
+                </Button>
+                <Button
+                  onClick={isManualPicking ? stopDetection : startManualPicking}
+                  disabled={isLoading}
+                  className="flex items-center gap-2"
+                  variant={isManualPicking ? "default" : "outline"}
+                >
+                  <Target className="w-4 h-4" />
+                  {isLoading ? "Loading..." : isManualPicking ? "Cancel Manual Pick" : "Manual Pick Ball"}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button onClick={isActive ? stopDetection : startDetection} className="flex items-center gap-2">
+                  {isActive ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                  {isActive ? "Stop Detection" : "Start Detection"}
+                </Button>
+                <Button onClick={resetCalibration} variant="outline" className="flex items-center gap-2">
+                  <Camera className="w-4 h-4" />
+                  Recalibrate
+                </Button>
+              </>
+            )}
+            <Button onClick={resetCounters} variant="outline" className="flex items-center gap-2">
+              <RotateCcw className="w-4 h-4" />
+              Reset Count
+            </Button>
+          </div>
+
+          {/* Calibration Guide */}
+          <CalibrationGuide step={calibrationStep} />
+
+          {/* Status Indicators */}
+          <div className="flex gap-2 flex-wrap">
+            <Badge variant={modelLoaded ? "default" : "secondary"}>
+              Model: {modelLoaded ? "Loaded" : "Loading..."}
+            </Badge>
+            <Badge variant={isActive || isCalibrating ? "default" : "secondary"}>
+              Camera: {isActive ? "Active" : isCalibrating ? "Calibrating" : "Inactive"}
+            </Badge>
+            <Badge variant={calibratedBall ? "default" : "secondary"}>
+              Ball: {calibratedBall ? "Calibrated" : "Not Set"}
+            </Badge>
+            <Badge variant="outline">FPS: {currentFPS}</Badge>
+          </div>
+
+          <div className="text-sm text-gray-600 bg-gray-50 p-2 rounded">Status: {detectionStatus}</div>
+
+          {/* Calibration Status */}
+          {isCalibrating && (
+            <Card className="border-yellow-200 bg-yellow-50">
+              <CardContent className="p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
+                  <span className="font-medium">{isManualPicking ? "Manual Ball Selection" : "Calibration Mode"}</span>
+                </div>
+                {isManualPicking && (
+                  <div className="flex gap-2 mt-2">
+                    <Button size="sm" onClick={confirmCalibration} className="bg-green-600 hover:bg-green-700">
+                      Confirm Calibration
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={cancelCalibration}>
+                      Cancel
+                    </Button>
+                  </div>
+                )}
+                {!isManualPicking ? (
+                  <>
+                    {calibrationStep === "detecting" && (
+                      <p className="text-sm text-gray-600">Looking for footballs in the frame...</p>
+                    )}
+                    {calibrationStep === "selecting" && (
+                      <div>
+                        <p className="text-sm text-gray-600 mb-2">Click on the ball you want to track:</p>
+                        <div className="flex gap-2 flex-wrap">
+                          {detectedBalls.map((ball, index) => (
+                            <Button
+                              key={index}
+                              size="sm"
+                              variant="outline"
+                              onClick={() => selectBallForCalibration(ball)}
+                              className="text-xs"
+                            >
+                              Ball {index + 1} ({(ball.confidence * 100).toFixed(1)}%)
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : null}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Calibrated Ball Info */}
+          {calibratedBall && !isCalibrating && (
+            <Card className="border-green-200 bg-green-50">
+              <CardContent className="p-4">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                  <span className="font-medium">Ball Calibrated - Simple Brightness Tracking</span>
+                  <Badge variant="outline" className="ml-auto">
+                    Ready to Track
+                  </Badge>
+                </div>
+                <p className="text-sm text-gray-600 mt-1">
+                  Will track brightest area near calibrated position ({Math.round(calibratedBall.x)},{" "}
+                  {Math.round(calibratedBall.y)})
+                </p>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Video and Canvas Container */}
+          <div className="relative bg-black rounded-lg overflow-hidden">
+            <video
+              ref={videoRef}
+              className="w-full h-auto"
+              playsInline
+              muted
+              style={{ display: isActive || isCalibrating ? "block" : "none" }}
+            />
+            <canvas
+              ref={canvasRef}
+              className="absolute top-0 left-0 w-full h-full cursor-crosshair"
+              style={{ display: isActive || isCalibrating ? "block" : "none" }}
+              onMouseDown={handleCanvasMouseDown}
+              onMouseMove={handleCanvasMouseMove}
+              onMouseUp={handleCanvasMouseUp}
+            />
+            {!isActive && !isCalibrating && (
+              <div className="aspect-video flex items-center justify-center text-gray-500">
+                <div className="text-center">
+                  <Square className="w-16 h-16 mx-auto mb-2 opacity-50" />
+                  <p>Click "Manual Pick Ball" to start</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Statistics */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Card>
+          <CardContent className="p-4 text-center">
+            <div className="text-3xl font-bold text-blue-600">{touchCount}</div>
+            <div className="text-sm text-gray-600">Total Touches</div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-4 text-center">
+            <div className="text-3xl font-bold text-green-600">
+              {lastDetection ? `${(lastDetection.confidence * 100).toFixed(1)}%` : "0%"}
+            </div>
+            <div className="text-sm text-gray-600">Detection Confidence</div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-4 text-center">
+            <div className="text-3xl font-bold text-purple-600">{recentTouches.length}</div>
+            <div className="text-sm text-gray-600">Recent Touches</div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Recent Touch Events */}
+      {recentTouches.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Recent Touch Events</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {recentTouches
+                .slice(-5)
+                .reverse()
+                .map((touch, index) => (
+                  <div key={touch.timestamp} className="flex justify-between items-center p-2 bg-gray-50 rounded">
+                    <span className="text-sm">Touch #{recentTouches.length - index}</span>
+                    <span className="text-sm text-gray-600">{new Date(touch.timestamp).toLocaleTimeString()}</span>
+                    <Badge variant="outline">{(touch.confidence * 100).toFixed(1)}%</Badge>
+                  </div>
+                ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}

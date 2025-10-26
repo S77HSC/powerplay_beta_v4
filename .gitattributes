@@ -1,0 +1,5 @@
+public/videos/*.mp4 filter=lfs diff=lfs merge=lfs -text
+public/sounds/*.mp3 filter=lfs diff=lfs merge=lfs -text
+public/LockerRoom/Footballs/*.3mf filter=lfs diff=lfs merge=lfs -text
+public/videos/*.webm filter=lfs diff=lfs merge=lfs -text
+public/videos/*.mov filter=lfs diff=lfs merge=lfs -text

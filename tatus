@@ -1,0 +1,23 @@
+  backup/feat-skills-static-thumbs      [m 3fea34e build: skip SSG via layout; disable /boostball
+  feat/daily-video-title-and-info-bar   [m 385ec6e [[34morigin/feat/daily-video-title-and-info-bar[m] Locker modal: top z-index + fixed-layer click guard; update friends page
+  feat/dashboard-refresh                [m 6b730fe Dashboard: 1-screen responsive grid + Skill Overview (donut+top list). Skills: scrollable list + fixed Earn XP routing.
+  feat/include-self-in-friends          [m 01866dd Skills: make skills list scrollable; Earn XP -> /skill-session?session=<id>
+  feat/leaderboard-page                 [m 24e9424 Leaderboard: add/update app/leaderboard/page.jsx
+  feat/live-news-neonbar                [m bbae381 Track MP3s via Git LFS and add sounds
+* [32mfeat/rr-mobile-controls-neonbar-aurora[m c26c69c [[34morigin/feat/rr-mobile-controls-neonbar-aurora[m] chore: trigger Vercel deploy
+  feat/skill-session-redesign           [m fb3ac8e 🔥 Major update: Gear modal, UI polish, XP logic, store fixes
+  feat/skills-header-scroll             [m 8ab7572 Track MP4s with LFS
+  feat/skills-scroll                    [m 01866dd Skills: make skills list scrollable; Earn XP -> /skill-session?session=<id>
+  feat/skills-static-thumbs             [m f94fe63 revert: restore layout.jsx from backup
+  feat/trophy-cabinet                   [m 62ea9a0 Add Trophy Cabinet image
+  feature/launch-intro                  [m 1553529 Fix imports: use relative paths for FullscreenPrompt and FloatingDM
+  feature/responsive-tracker            [m 36c20f7 Chore: remove unused FriendsList component to clean up repo
+  fix/audio-paths                       [m d3c60df Fix audio paths: use /sounds/* (Next.js public assets)
+  fix/complete-profile-dynamic          [m 0503600 fix(complete-profile): force dynamic to allow useSearchParams during build
+  fix/reveal-sfx                        [m addcbd4 Remove wow.mp3 and pack_open.mp3 references; keep reveal reveal.mp3 only
+  fix/skill-session-save-reps           [m 6e838b4 Untrack sounds from LFS; commit real MP3 assets for Vercel
+  fix/static-thumbs                     [m 52de536 [[34morigin/fix/static-thumbs[m] Skills: remove Details, route Earn XP to session, static image previews w/ robust resolver
+  main                                  [m 1ba1b22 chore: trigger deploy (skills header + auto-fit scroller)
+  master                                [m 2c97048 Initial commit of PowerPlay Beta
+  release/full-sync                     [m 25e3597 chore: trigger preview build
+  staging-sync                          [m 36c20f7 Chore: remove unused FriendsList component to clean up repo

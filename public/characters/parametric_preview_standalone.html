@@ -1,0 +1,208 @@
+<script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
+<script src="https://unpkg.com/three@0.158.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(function(){
+  const stage = document.getElementById('stage');
+
+  // --- tiny status overlay
+  const statusEl = document.createElement('div');
+  statusEl.style.cssText = 'position:absolute;left:10px;bottom:10px;font:12px/1.2 system-ui;color:#9cc;opacity:.9';
+  statusEl.textContent = 'ready';
+  stage.appendChild(statusEl);
+  const setStatus = (t)=>statusEl.textContent=t;
+
+  // quick WebGL sanity
+  const gl = document.createElement('canvas').getContext('webgl');
+  if (!gl) {
+    stage.innerHTML = '<div style="padding:24px">WebGL not available. Enable hardware acceleration or try Chrome/Edge/Firefox.</div>';
+    return;
+  }
+
+  // ---- UI refs
+  const skinToneEl = document.getElementById('skinTone');
+  const hairColorEl = document.getElementById('hairColor');
+  const headshotEl = document.getElementById('headshot');
+  const axEl = document.getElementById('ax');
+  const ayEl = document.getElementById('ay');
+  const asEl = document.getElementById('as');
+  const arEl = document.getElementById('ar');
+  const buildBtn = document.getElementById('buildFace');
+  const resetBtn = document.getElementById('resetFace');
+
+  // ---- Three scene
+  const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(stage.clientWidth, stage.clientHeight);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.setClearColor(0x0b1019, 1); // visible clear
+  stage.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(35, stage.clientWidth/stage.clientHeight, 0.1, 100);
+  camera.position.set(0, 1.55, 2.8);
+
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.target.set(0, 1.35, 0);
+  controls.enablePan = false;
+  controls.enableDamping = true;
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+  const dir = new THREE.DirectionalLight(0xffffff, 0.65);
+  dir.position.set(2,4,2);
+  scene.add(dir);
+
+  // ground + grid (so you instantly see *something*)
+  const ground = new THREE.Mesh(
+    new THREE.CircleGeometry(3.5, 64),
+    new THREE.MeshStandardMaterial({ color: 0x0e1425, roughness: 1 })
+  );
+  ground.rotation.x = -Math.PI/2;
+  ground.position.y = 0;
+  scene.add(ground);
+
+  const grid = new THREE.GridHelper(7, 14, 0x1a2b4a, 0x0f1a33);
+  grid.position.y = 0.001;
+  scene.add(grid);
+
+  // ---- Simple avatar (body + head + hair)
+  const body = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.35, 1.2, 6, 12),
+    new THREE.MeshStandardMaterial({ color: 0xffffff })
+  );
+  body.position.y = 1.0;
+
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.22, 48, 48),
+    new THREE.MeshStandardMaterial({ color: 0xffffff })
+  );
+  head.position.y = 1.6;
+
+  const hair = new THREE.Mesh(
+    new THREE.SphereGeometry(0.225, 48, 48, 0, Math.PI*2, 0, Math.PI/2),
+    new THREE.MeshStandardMaterial({ color: 0x1f1f1f, roughness: 0.95 })
+  );
+  hair.position.y = 1.66;
+
+  const rig = new THREE.Group();
+  rig.add(body, head, hair);
+  scene.add(rig);
+
+  // gentle turntable so it feels alive
+  let autoRotate = true;
+  function toggleRotate() { autoRotate = !autoRotate; }
+  stage.addEventListener('dblclick', toggleRotate);
+
+  // ---- tone & hair helpers
+  function applySkinTone(shift){
+    const s = Math.max(0.6, Math.min(1.4, 1 + shift));
+    [head.material, body.material].forEach(m => { m.color = new THREE.Color(s, s, s); m.needsUpdate = true; });
+  }
+  function setHairColor(hex){
+    hair.material.color = new THREE.Color(hex); hair.material.needsUpdate = true;
+  }
+  applySkinTone(parseFloat(skinToneEl.value));
+  setHairColor(hairColorEl.value);
+
+  // ---- build face texture with circular feather mask
+  let headshotImg = null, faceUrl = null, faceTex = null;
+
+  function buildMask(size){
+    const c = document.createElement('canvas'); c.width = c.height = size;
+    const ctx = c.getContext('2d');
+    const grad = ctx.createRadialGradient(size/2,size/2,size*0.35, size/2,size/2,size*0.5);
+    grad.addColorStop(0,'rgba(255,255,255,1)');
+    grad.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(size/2,size/2,size*0.5,0,Math.PI*2); ctx.fill();
+    return c;
+  }
+
+  function composeFaceTexture(align){
+    if (!headshotImg) return;
+    setStatus('compositing face…');
+
+    const size = 1024;
+    const base = document.createElement('canvas'); base.width = base.height = size;
+    const bctx = base.getContext('2d'); bctx.fillStyle = '#f2f2f2'; bctx.fillRect(0,0,size,size);
+
+    const mask = buildMask(size);
+    const faceLayer = document.createElement('canvas'); faceLayer.width = faceLayer.height = size;
+    const fctx = faceLayer.getContext('2d');
+    fctx.drawImage(mask,0,0); fctx.globalCompositeOperation = 'source-in';
+
+    fctx.save();
+    fctx.translate(size*align.x, size*align.y);
+    fctx.rotate((align.rot*Math.PI)/180);
+    const w=size*align.scale, h=size*align.scale*1.2;
+    fctx.drawImage(headshotImg, -w/2, -h/2, w, h);
+    fctx.restore();
+
+    bctx.drawImage(faceLayer,0,0);
+
+    base.toBlob(blob=>{
+      if (faceUrl) URL.revokeObjectURL(faceUrl);
+      faceUrl = URL.createObjectURL(blob);
+
+      const loader = new THREE.TextureLoader();
+      loader.load(faceUrl, tex=>{
+        tex.colorSpace = THREE.SRGBColorSpace;
+        head.material.map = tex; head.material.needsUpdate = true;
+        faceTex = tex;
+        setStatus('face mapped ✔');
+      }, undefined, err=>{
+        console.error(err);
+        setStatus('failed to load face texture');
+      });
+    }, 'image/webp', 0.95);
+  }
+
+  // ---- UI events
+  skinToneEl.addEventListener('input', e=>applySkinTone(parseFloat(e.target.value)));
+  hairColorEl.addEventListener('input', e=>setHairColor(e.target.value));
+
+  headshotEl.addEventListener('change', e=>{
+    const f = e.target.files && e.target.files[0];
+    if (!f) { setStatus('ready'); return; }
+    const img = new Image();
+    img.onload = ()=>{ headshotImg = img; setStatus('photo loaded — building…'); composeFaceTexture({
+      x: parseFloat(axEl.value),
+      y: parseFloat(ayEl.value),
+      scale: parseFloat(asEl.value),
+      rot: parseFloat(arEl.value)
+    }); };
+    img.onerror = ()=>setStatus('failed to load image');
+    img.src = URL.createObjectURL(f);
+    // enable button and also auto-build on select
+    buildBtn.disabled = false;
+  });
+
+  buildBtn.addEventListener('click', ()=>{
+    composeFaceTexture({
+      x: parseFloat(axEl.value),
+      y: parseFloat(ayEl.value),
+      scale: parseFloat(asEl.value),
+      rot: parseFloat(arEl.value)
+    });
+  });
+
+  resetBtn.addEventListener('click', ()=>{
+    if (faceTex){ head.material.map = null; head.material.needsUpdate = true; faceTex.dispose(); faceTex=null; }
+    if (faceUrl){ URL.revokeObjectURL(faceUrl); faceUrl=null; }
+    headshotEl.value=''; buildBtn.disabled = true; setStatus('reset ✔');
+  });
+
+  // ---- resize + render
+  window.addEventListener('resize', ()=>{
+    const w = stage.clientWidth, h = stage.clientHeight;
+    renderer.setSize(w,h); camera.aspect = w/h; camera.updateProjectionMatrix();
+  });
+
+  renderer.setAnimationLoop(()=>{
+    controls.update();
+    if (autoRotate) rig.rotation.y += 0.003;
+    renderer.render(scene, camera);
+  });
+
+  setStatus('viewer ready — double-click canvas to toggle auto-rotate');
+})();
+</script>

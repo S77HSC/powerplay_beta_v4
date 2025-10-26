@@ -1,0 +1,39 @@
+create table parent_links (
+  id uuid primary key default gen_random_uuid(),
+  child_email text not null,
+  parent_email text not null,
+  status text default 'invited',
+  created_at timestamp with time zone default now()
+);
+
+
+//Add these...
+
+alter table parent_links
+add column token text,
+add column token_expiry timestamp with time zone;
+
+-- parent_links
+id UUID PK
+parent_email TEXT
+child_id UUID (FK to users)
+status TEXT -- 'approved'
+
+-- user_profiles
+id UUID
+is_verified BOOLEAN
+spending_limit INT
+parent_override BOOLEAN
+chat_enabled BOOLEAN
+
+-- xp_logs
+user_id UUID
+amount INT
+source TEXT
+timestamp TIMESTAMP
+
+-- purchases
+user_id UUID
+item TEXT
+tokens_spent INT
+timestamp TIMESTAMP

@@ -1,0 +1,88 @@
+// React component: Parental Approval Landing Page with child notification update
+import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { supabase } from "@/lib/supabaseClient";
+import { Button } from "@/components/ui/button";
+
+export default function ParentApprovalPage() {
+  const params = useSearchParams();
+  const token = params.get("token");
+  const [status, setStatus] = useState("verifying");
+
+  useEffect(() => {
+    const verifyToken = async () => {
+      const { data, error } = await supabase
+        .from("parent_links")
+        .select("id, token_expiry, child_email")
+        .eq("token", token)
+        .eq("status", "pending")
+        .single();
+
+      if (error || !data) {
+        setStatus("invalid");
+        return;
+      }
+
+      const isExpired = new Date(data.token_expiry) < new Date();
+      if (isExpired) {
+        setStatus("expired");
+        return;
+      }
+
+      const updates = [
+        supabase.from("parent_links").update({
+          status: "approved",
+          token: null,
+          token_expiry: null,
+        }).eq("id", data.id),
+
+        supabase.from("players").update({
+          is_verified: true
+        }).eq("email", data.child_email)
+      ];
+
+      const [{ error: linkError }, { error: childError }] = await Promise.all(updates);
+
+      if (linkError || childError) setStatus("error");
+      else setStatus("approved");
+    };
+
+    if (token) verifyToken();
+    else setStatus("invalid");
+  }, [token]);
+
+  return (
+    <div className="max-w-lg mx-auto py-20 text-center">
+      {status === "verifying" && <p>Verifying approval link...</p>}
+      {status === "approved" && (
+        <div>
+          <h1 className="text-2xl font-bold mb-2">✅ Approved!</h1>
+          <p>Your child’s account has been successfully approved and unlocked.</p>
+        </div>
+      )}
+      {status === "expired" && (
+        <div>
+          <h1 className="text-2xl font-bold mb-2">⚠️ Link Expired</h1>
+          <p>This approval link has expired. Please request a new one.</p>
+        </div>
+      )}
+      {status === "invalid" && (
+        <div>
+          <h1 className="text-2xl font-bold mb-2">❌ Invalid Token</h1>
+          <p>This approval link is invalid or has already been used.</p>
+        </div>
+      )}
+      {status === "error" && (
+        <div>
+          <h1 className="text-2xl font-bold mb-2">❌ Something went wrong</h1>
+          <p>Please try again later or contact support.</p>
+        </div>
+      )}
+      {status !== "verifying" && (
+        <Button onClick={() => window.location.href = "/"} className="mt-4">
+          Back to PowerPlay
+        </Button>
+      )}
+    </div>
+  );
+}

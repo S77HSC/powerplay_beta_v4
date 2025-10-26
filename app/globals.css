@@ -1,0 +1,139 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== Base / resets ===== */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:root {
+  --ui-scale: 1;   /* default scale for pages that don't override it */
+  --app-vh: 1vh;   /* iOS-safe vh fallback; updated by a tiny hook */
+  color-scheme: dark;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: #000;
+  color: #e5e7eb;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Media elements behave responsively by default */
+img, picture, video, canvas, svg {
+  display: block;
+  max-width: 100%;
+}
+
+/* Links */
+a { color: #93c5fd; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Buttons baseline */
+button {
+  background: none;
+  color: inherit;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* Wrap long text instead of overflowing */
+:where(p, h1, h2, h3, h4, h5, h6, li) { overflow-wrap: anywhere; }
+
+/* Optional: nicer scrollbars (Chromium/Edge/Safari) */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: rgba(148,163,184,.35); border-radius: 8px; }
+*::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,.5); }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* ===== Lobby-only scaling (Option A) ===== */
+/* Apply .lobby on the page/wrapper that hosts the fixed-size stage */
+.lobby {
+  height: calc(var(--app-vh, 1vh) * 100); /* fills viewport safely on mobile */
+  width: 100%;
+  overflow: hidden;                        /* the stage area itself shouldn't scroll */
+  position: relative;
+  background: #000;
+}
+
+/* The fixed-size stage (e.g. 1440x900) that will be uniformly scaled */
+.lobby-stage {
+  /* width/height set inline (e.g. 1440px/900px) */
+  transform: scale(var(--ui-scale, 1));
+  transform-origin: top left;
+  will-change: transform;
+}
+
+/* When showing the stage, you can add this to <body> to prevent page scroll */
+body.is-stage { overflow: hidden !important; }
+
+/* ===== Utilities you may use across pages ===== */
+.scroll-pane { overflow: auto; }
+
+.container {
+  max-width: 1280px;
+  margin-inline: auto;
+  padding-inline: 16px;
+}
+
+/* Lightweight cards/buttons (optional) */
+.card {
+  background: rgba(15,23,42,.6);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 12px;
+  backdrop-filter: blur(6px);
+}
+
+.btn {
+  @apply inline-flex items-center gap-2 px-3 py-2 rounded-xl border text-slate-200;
+  border-color: #94a3b8;
+  background: transparent;
+}
+.btn-primary {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #fff;
+}
+.btn:hover { filter: brightness(1.05); }
+
+/* Optional small helper for your neon bar wrapper */
+.neon-icon-bar-container { display: inline-flex; align-items: center; gap: 8px; }
+
+/* ===== Respect reduced motion ===== */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ===== Fullscreen stability (prevents jump when browser UI bars hide) ===== */
+@supports (height: 100dvh) {
+  .h-screen { height: 100dvh; }
+}
+/* === Locker modal overlap fix === */
+#pp-modal-root { position: relative; z-index: 2147483647 !important; }
+
+/* While the modal is open, ignore clicks on other fixed layers (headers, toolbars, toasts) */
+body.locker-modal-open *:where(.fixed, [style*="position: fixed"]) {
+  pointer-events: none !important;
+}
+
+/* But keep the modal fully interactive */
+body.locker-modal-open #pp-modal-root,
+body.locker-modal-open #pp-modal-root * {
+  pointer-events: auto !important;
+}

@@ -1,0 +1,58 @@
+[
+  {
+    "file": "v2_arena_floor_tile.png",
+    "bytes": 2274
+  },
+  {
+    "file": "v2_wall_panel.png",
+    "bytes": 7773
+  },
+  {
+    "file": "v2_goal_slot_blue.png",
+    "bytes": 1089
+  },
+  {
+    "file": "v2_goal_slot_magenta.png",
+    "bytes": 1162
+  },
+  {
+    "file": "v2_led_ribbon.png",
+    "bytes": 223
+  },
+  {
+    "file": "v2_star_blue.png",
+    "bytes": 1666
+  },
+  {
+    "file": "v2_star_magenta.png",
+    "bytes": 1643
+  },
+  {
+    "file": "v2_bumper.png",
+    "bytes": 3834
+  },
+  {
+    "file": "v2_crowd_strip.png",
+    "bytes": 104072
+  },
+  {
+    "file": "v2_center_crest.png",
+    "bytes": 24110
+  },
+  {
+    "file": "v2_vignette_overlay.png",
+    "bytes": 101236
+  },
+  {
+    "file": "ball.png",
+    "bytes": 680
+  },
+  {
+    "file": "player_blue.png",
+    "bytes": 32147
+  },
+  {
+    "file": "player_magenta.png",
+    "bytes": 32250
+  }
+]

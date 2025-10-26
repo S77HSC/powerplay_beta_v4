@@ -1,0 +1,89 @@
+import { useState } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { ShoppingCart, Lock } from "lucide-react";
+
+const kits = [
+  {
+    name: "Default Kit",
+    image: "/kits/default.png",
+    unlocked: true,
+  },
+  {
+    name: "Firestorm Armor",
+    image: "/kits/firestorm.png",
+    unlocked: false,
+  },
+  {
+    name: "Cyber Ninja Suit",
+    image: "/kits/cyber-ninja.png",
+    unlocked: false,
+  },
+];
+
+export default function PowerPlayCharacter() {
+  const [selectedKitIndex, setSelectedKitIndex] = useState(0);
+
+  const handleUnlock = (index) => {
+    kits[index].unlocked = true;
+    setSelectedKitIndex(index);
+  };
+
+  return (
+    <div className="p-4 grid gap-4">
+      <h1 className="text-2xl font-bold">Your PowerPlay Character</h1>
+
+      <Card className="w-full max-w-md mx-auto shadow-xl rounded-2xl">
+        <CardContent className="p-4">
+          <img
+            src="/character/your-avatar.png"
+            alt="Character"
+            className="w-full object-contain mb-4"
+          />
+          <img
+            src={kits[selectedKitIndex].image}
+            alt={kits[selectedKitIndex].name}
+            className="w-full object-contain"
+          />
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {kits.map((kit, index) => (
+          <Card
+            key={index}
+            className={`cursor-pointer ${
+              kit.unlocked ? "border-green-500" : "border-gray-400"
+            }`}
+          >
+            <CardContent className="p-2 text-center">
+              <img
+                src={kit.image}
+                alt={kit.name}
+                className="w-full h-32 object-contain mb-2"
+              />
+              <p className="text-sm font-semibold">{kit.name}</p>
+              {kit.unlocked ? (
+                <Button
+                  variant="secondary"
+                  onClick={() => setSelectedKitIndex(index)}
+                  className="mt-2"
+                >
+                  Equip
+                </Button>
+              ) : (
+                <Button
+                  variant="default"
+                  onClick={() => handleUnlock(index)}
+                  className="mt-2"
+                >
+                  <ShoppingCart className="w-4 h-4 mr-1" /> Unlock
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
