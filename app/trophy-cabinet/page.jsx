@@ -5,17 +5,29 @@ import Link from "next/link";
 import { supabase } from "../../lib/supabase";
 import CollectiblesTray from "../../lobbycomponents/CollectiblesTray";
 import NeonIconBar from "../../lobbycomponents/NeonIconBar";
+import TrophyShelf from "../../lobbycomponents/TrophyShelf";
 
 export default function TrophyCabinetPage() {
   const [playerId, setPlayerId] = useState(null);
+  const [loading, setLoading] = useState(true);
 
+  // Resolve playerId from current auth user
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const { data } = await supabase.from("players").select("id").eq("auth_id", user.id).single();
-      setPlayerId(data?.id ?? null);
+      if (!user) { setLoading(false); return; }
+      const { data, error } = await supabase
+        .from("players")
+        .select("id")
+        .eq("auth_id", user.id)
+        .maybeSingle();
+      if (!cancelled) {
+        if (!error) setPlayerId(data?.id ?? null);
+        setLoading(false);
+      }
     })();
+    return () => { cancelled = true; };
   }, []);
 
   return (
@@ -28,7 +40,7 @@ export default function TrophyCabinetPage() {
       }}
     >
       {/* Top bar */}
-      <div className="sticky top-0 z-30 flex items-center justify-between bg-black/45 backdrop-blur-md p-2.5 md:p-3 border-b border-white/10 rounded-xl mb-4">
+      <div className="sticky top-0 z-30 mb-4 flex items-center justify-between rounded-xl border border-white/10 bg-black/45 p-2.5 md:p-3 backdrop-blur-md">
         <NeonIconBar />
         <div className="flex gap-2">
           <Link
@@ -53,12 +65,26 @@ export default function TrophyCabinetPage() {
         </p>
       </header>
 
-      {/* Big roomy cabinet panel */}
-      <section className="rounded-2xl border border-yellow-400/40 bg-black/50 backdrop-blur-xl p-3 md:p-4 shadow-[0_0_40px_rgba(255,215,0,0.12)]">
-        {playerId ? (
+      {/* Cards / collectibles */}
+      <section className="mb-6 rounded-2xl border border-yellow-400/40 bg-black/50 p-3 md:p-4 shadow-[0_0_40px_rgba(255,215,0,0.12)] backdrop-blur-xl">
+        {loading ? (
+          <div className="p-6 text-slate-200/90">Loading your cabinet…</div>
+        ) : playerId ? (
           <CollectiblesTray playerId={playerId} orbitronClass="font-arena" />
         ) : (
-          <div className="text-slate-200/90 p-6">Loading your cabinet…</div>
+          <div className="p-6 text-slate-200/90">No player found for this account.</div>
+        )}
+      </section>
+
+      {/* Trophies */}
+      <section className="rounded-2xl border border-white/10 bg-white/5 p-3 md:p-4 backdrop-blur-xl">
+        <h2 className="mb-3 text-xl md:text-2xl font-semibold">Weekly Trophies</h2>
+        {loading ? (
+          <div className="p-6 text-slate-200/90">Loading trophies…</div>
+        ) : playerId ? (
+          <TrophyShelf playerId={playerId} />
+        ) : (
+          <div className="p-6 text-slate-200/90">Sign in to view your trophies.</div>
         )}
       </section>
     </main>

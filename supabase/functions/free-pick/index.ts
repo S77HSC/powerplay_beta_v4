@@ -1,145 +1,103 @@
-// supabase/functions/free-pick/index.ts
-// Edge Function: awards a free card if not on cooldown
+﻿// supabase/functions/free-pick/index.ts
+// Grants a new card if available; otherwise returns 200 with a graceful message.
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const corsHeaders = {
+const cors = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Max-Age": "86400",
 };
 
-Deno.serve(async (req) => {
-  // Preflight
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
-  }
-
-  try {
-    if (req.method !== "POST") {
-      return json({ ok: false, error: "Method Not Allowed" }, 405);
-    }
-
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    if (!supabaseUrl || !serviceRoleKey) {
-      return json(
-        { ok: false, error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in function env." },
-        500
-      );
-    }
-
-    // Service-role client (bypasses RLS; keep this server-side only)
-    const db = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } });
-
-    // Accept both player_id (preferred) and legacy player_id
-    const body = await req.json().catch(() => ({}));
-    const rawId = body?.player_id ?? body?.player_id;
-    const player_id = Number(rawId);
-
-    if (!Number.isFinite(player_id)) {
-      return json({ ok: false, error: "Bad or missing player_id" }, 400);
-    }
-
-    // 1) Cooldown check
-    const { data: prog, error: progErr } = await db
-      .from("user_progress")
-      .select("next_free_pick_at")
-      .eq("player_id", player_id)
-      .maybeSingle();
-
-    if (progErr) throw progErr;
-
-    const now = new Date();
-    const nextAt = prog?.next_free_pick_at ? new Date(prog.next_free_pick_at) : null;
-    if (nextAt && nextAt > now) {
-      // Not an error — just not ready yet
-      return json({ ok: false, reason: "cooldown", nextFreePickAt: nextAt.toISOString() }, 200);
-    }
-
-    // 2) Pick a card to award
-    const { data: allCards, error: cardsErr } = await db
-      .from("cards")
-      .select("id, rarity, weight, is_active")
-      .eq("is_active", true)
-      .limit(5000);
-
-    if (cardsErr) throw cardsErr;
-    if (!allCards?.length) return json({ ok: false, error: "No active cards available" }, 200);
-
-    const cardId = chooseCardId(allCards);
-
-    // 3) Insert into user_cards
-    // NOTE: This assumes user_cards has a player_id column.
-    // If your user_cards table uses player_id instead, change 'player_id' below to 'player_id'.
-    const { data: uc, error: insErr } = await db
-      .from("user_cards")
-      .insert({
-        player_id: player_id,
-        card_id: cardId,
-        is_equipped: false,
-        obtained_at: now.toISOString(),
-      })
-      .select("id, card_id, is_equipped")
-      .single();
-
-    if (insErr) throw insErr;
-
-    // 4) Set the next cooldown (24h example)
-    const next = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-    const { error: upErr } = await db
-      .from("user_progress")
-      .upsert(
-        { player_id, next_free_pick_at: next.toISOString() },
-        { onConflict: "player_id" }
-      );
-
-    if (upErr) throw upErr;
-
-    // 5) Done
-    return json(
-      {
-        ok: true,
-        card: { user_card_id: uc.id, card_id: uc.card_id },
-        nextFreePickAt: next.toISOString(),
-      },
-      200
-    );
-  } catch (e) {
-    console.error("free-pick error:", e);
-    return json({ ok: false, error: e?.message ?? String(e) }, 500);
-  }
-});
-
-function json(body: unknown, status = 200) {
+function okJSON(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", ...corsHeaders },
+    headers: { "content-type": "application/json", ...cors },
   });
 }
+function errJSON(message: string, status = 400) {
+  return okJSON({ ok: false, error: message }, status);
+}
 
-type CardRow = {
-  id: number;
-  rarity?: string | null;
-  weight?: number | null;
-  is_active?: boolean | null;
-};
+Deno.serve(async (req: Request) => {
+  // Preflight must not crash
+  if (req.method === "OPTIONS") return new Response("ok", { status: 204, headers: cors });
+  if (req.method !== "POST") return errJSON("Method not allowed", 405);
 
-// Weighted choice: uses `weight` if present; otherwise biases by rarity.
-function chooseCardId(rows: CardRow[]): number {
-  const weights = rows.map((r) => {
-    if (typeof r.weight === "number" && r.weight > 0) return r.weight;
-    const rar = (r.rarity || "").toLowerCase();
-    if (rar === "legendary") return 1;   // rare
-    if (rar === "epic") return 3;
-    if (rar === "rare") return 10;
-    return 30;                           // common
-  });
+  try {
+    const SUPABASE_URL      = Deno.env.get("SUPABASE_URL")      ?? Deno.env.get("SB_URL");
+    const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("ANON_KEY");
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return errJSON("Missing function secrets", 500);
 
-  const total = weights.reduce((a, b) => a + b, 0) || 1;
-  let pick = Math.random() * total;
-  for (let i = 0; i < rows.length; i++) {
-    pick -= weights[i];
-    if (pick <= 0) return rows[i].id;
+    // Import AFTER OPTIONS so CORS preflight can’t 500
+    const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2?target=deno");
+    const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
+    });
+
+    // Auth user
+    const { data: userData, error: userErr } = await client.auth.getUser();
+    if (userErr || !userData?.user) return errJSON("Unauthorized", 401);
+    const authId = userData.user.id;
+
+    // Body
+    const body = await req.json().catch(() => ({} as Record<string, unknown>));
+    const player_id = typeof body.player_id === "number" ? body.player_id : null;
+    if (!player_id) return errJSON("Missing or invalid 'player_id' (number required)", 400);
+
+    // 1) Owned cards for this player
+    const ownedRes = await client.from("user_cards").select("card_id").eq("player_id", player_id);
+    if (ownedRes.error) return errJSON(`DB error (owned): ${ownedRes.error.message}`, 500);
+    const owned = new Set((ownedRes.data ?? []).map((r: any) => r.card_id));
+
+    // 2) All card ids
+    const cardsRes = await client.from("cards").select("id").limit(5000);
+    if (cardsRes.error) return errJSON(`DB error (cards): ${cardsRes.error.message}`, 500);
+    const allIds: number[] = (cardsRes.data ?? []).map((c: any) => c.id);
+
+    // 3) Filter available (not yet owned)
+    const available = allIds.filter((id) => !owned.has(id));
+
+    // 4) If none left → graceful 200 with message, no rewards
+    if (available.length === 0) {
+      return okJSON({
+        ok: true,
+        alreadyClaimed: true,
+        cards: [],
+        message: "No new cards right now — new rewards coming soon!",
+      });
+    }
+
+    // 5) Choose & insert a new card
+    const choice = available[Math.floor(Math.random() * available.length)];
+    const nowIso = new Date().toISOString();
+
+    const ins = await client
+      .from("user_cards")
+      .insert({ player_id, auth_id: authId, card_id: choice, obtained_at: nowIso, is_equipped: false })
+      .select("card_id, obtained_at")
+      .single();
+
+    if (ins.error) {
+      // If a rare race condition hits the unique (player_id, card_id), return the same graceful response
+      if ((ins.error as any).code === "23505") {
+        return okJSON({
+          ok: true,
+          alreadyClaimed: true,
+          cards: [],
+          message: "No new cards right now — new rewards coming soon!",
+        });
+      }
+      return errJSON(`DB error (insert user_cards): ${ins.error.message}`, 500);
+    }
+
+    // Success: return one card for the UI to reveal
+    return okJSON({
+      ok: true,
+      alreadyClaimed: false,
+      cards: [{ card_id: ins.data.card_id }],
+      message: null,
+    });
+  } catch (e) {
+    return errJSON(String(e), 500);
   }
-  return rows[rows.length - 1].id;
-}
+});

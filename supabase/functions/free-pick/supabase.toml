@@ -1,4 +1,4 @@
-# supabase/functions/free-pick/supabase.toml
+﻿# supabase/functions/free-pick/supabase.toml
 [functions.free-pick]
 # Using service-role inside the function, so do NOT require a JWT
 verify_jwt = false

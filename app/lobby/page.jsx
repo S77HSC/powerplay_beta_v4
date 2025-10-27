@@ -1,3 +1,4 @@
+// app/lobby/page.jsx
 "use client";
 
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
@@ -7,7 +8,7 @@ import dynamic from "next/dynamic";
 import { motion, useMotionValue, useSpring } from "framer-motion";
 import { supabase } from "../../lib/supabase";
 
-/* ===== fixed stage size (autoscaled, never upscales) ===== */
+/* ===== Stage base size (scaled down to fit, never upscales) ===== */
 const BASE_W = 1920;
 const BASE_H = 1080;
 
@@ -16,30 +17,25 @@ const MESSAGES_SAFE = 96;
 
 /* ===== layout knobs ===== */
 const LAYOUT = {
-  // Lower the avatar/level/streaks block
-  HEADER_TOP: 140, // was 86
-
+  HEADER_TOP: 140,
   RAIL_W: 340,
   RAIL_SCALE: 0.95,
-  RAIL_BOTTOM: 22 + MESSAGES_SAFE, // lift rails so Messages can sit beneath
-
+  RAIL_BOTTOM: 22 + MESSAGES_SAFE,
   GUTTER: 28,
-
   CTA_WIDTH: 780,
-  CTA_BOTTOM: 18 + Math.round(MESSAGES_SAFE * 0.5), // nudge CTA up a bit
+  CTA_BOTTOM: 18 + Math.round(MESSAGES_SAFE * 0.5),
   CTA_H: 56,
-
   TRAY_H: 208,
   TRAY_GAP_ABOVE_CTA: 16,
   CENTER_GAP: 16,
-
-  // NEW: character tuning
   CHARACTER_SCALE: 1.12,
-  CHARACTER_OFFSET_Y: 0, // positive pushes striker down, negative up
-
-  // NEW: push the top “Cup” banner down from the neon bar
+  CHARACTER_OFFSET_Y: 0,
   BANNERS_OFFSET_Y: 40,
 };
+
+/* A slim ticker sits just above the collectibles tray */
+const TICKER_BOTTOM =
+  LAYOUT.TRAY_GAP_ABOVE_CTA + LAYOUT.CTA_BOTTOM + LAYOUT.CTA_H + LAYOUT.TRAY_H + 12;
 
 /* ===== lazy components ===== */
 const EventBanners      = dynamic(() => import("../../lobbycomponents/EventBanners"),      { ssr: false });
@@ -52,6 +48,7 @@ const NeonIconBar       = dynamic(() => import("../../lobbycomponents/NeonIconBa
 const RewardCenter      = dynamic(() => import("../../lobbycomponents/RewardCentre"),      { ssr: false });
 const StreakPill        = dynamic(() => import("../../lobbycomponents/StreakPill"),        { ssr: false });
 const FreePickPill      = dynamic(() => import("../../lobbycomponents/FreePickPill"),      { ssr: false });
+const WeeklyTrophiesWidget = dynamic(() => import("../../lobbycomponents/WeeklyTrophiesWidget"), { ssr: false });
 
 /* ===== helpers ===== */
 const toNumber = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
@@ -85,7 +82,6 @@ function useLocalUiScale(targetRef) {
   useEffect(() => {
     const calc = () => {
       const vv = window.visualViewport || { width: window.innerWidth, height: window.innerHeight };
-      // never upscale (keeps everything crisp)
       const scale = Math.min(1, Math.min(vv.width / BASE_W, vv.height / BASE_H));
       const sceneW = BASE_W * scale;
       const sceneH = BASE_H * scale;
@@ -118,14 +114,13 @@ function useLocalUiScale(targetRef) {
 
 /* ===== header mini component ===== */
 function BigHeader({ name, avatarUrl, level, points }) {
-  const REQUIRED = 100;                                     // XP needed per level
+  const REQUIRED = 100;
   const total = toNumber(points, 0);
   const inLevel = Math.max(0, Math.floor(total % REQUIRED));
   const pct = Math.max(0, Math.min(100, Math.round((inLevel / REQUIRED) * 100)));
 
   return (
     <div className="flex flex-col items-center text-white select-none">
-      {/* Avatar with warm halo (kept similar) */}
       <div className="relative rounded-full p-[5px] bg-gradient-to-br from-yellow-400 to-orange-500 shadow-[0_0_28px_rgba(255,190,0,0.45)]">
         <div className="overflow-hidden rounded-full bg-slate-700" style={{ width: 110, height: 110 }}>
           <img
@@ -137,7 +132,6 @@ function BigHeader({ name, avatarUrl, level, points }) {
         </div>
       </div>
 
-      {/* Name + Level label */}
       <div className="mt-3 font-arena tracking-wide3 uppercase leading-none arena-glow text-[30px]">
         {name || "Player"}
       </div>
@@ -145,27 +139,22 @@ function BigHeader({ name, avatarUrl, level, points }) {
         Level {level}
       </div>
 
-      {/* Neon / glass XP bar */}
       <div className="mt-3 w-[640px] relative">
-        {/* Aura behind the bar for pop */}
         <div
           className="absolute left-1/2 -translate-x-1/2 -top-[2px] h-[20px] w-[92%] rounded-full blur-lg opacity-90"
           style={{ background: "conic-gradient(from 0deg,#00f5ff,#22c55e,#a855f7,#00f5ff)" }}
           aria-hidden
         />
-        {/* Hard outline for contrast */}
         <div className="h-4 w-full rounded-full ring-2 ring-black/55 pointer-events-none" aria-hidden />
-        {/* Track */}
         <div
           className="relative -mt-4 h-4 w-full rounded-full overflow-hidden bg-slate-950/70 ring-1 ring-white/10 backdrop-blur-md shadow-[0_8px_20px_rgba(0,0,0,.45)]"
           role="progressbar"
           aria-valuemin={0}
-          aria-valuemax={REQUIRED}
+          aria-valuemax={100}
           aria-valuenow={inLevel}
           aria-label="Level progress"
           title={`${pct}%`}
         >
-          {/* Fill */}
           <div
             className="h-full rounded-full transition-[width] duration-600"
             style={{
@@ -174,7 +163,6 @@ function BigHeader({ name, avatarUrl, level, points }) {
               boxShadow: "0 0 18px rgba(34,197,94,.75), 0 0 36px rgba(168,85,247,.45)",
             }}
           />
-          {/* Flowing glow (clipped to fill) */}
           <div
             className="absolute inset-y-0 left-0 pointer-events-none mix-blend-screen"
             style={{
@@ -185,7 +173,6 @@ function BigHeader({ name, avatarUrl, level, points }) {
               animation: "lvl-flow 1.8s linear infinite",
             }}
           />
-          {/* Spark at current progress */}
           <div
             className="absolute top-1/2 -translate-y-1/2 h-3 w-3 rounded-full pointer-events-none"
             style={{
@@ -196,12 +183,10 @@ function BigHeader({ name, avatarUrl, level, points }) {
           />
         </div>
 
-        {/* Numbers under the bar */}
         <div className="mt-1 text-center text-xs text-white/85 font-arena tracking-wide2">
-          {inLevel} / {REQUIRED} XP (total: {total})
+          {inLevel} / 100 XP (total: {total})
         </div>
 
-        {/* Local keyframes for the flowing glow */}
         <style jsx>{`
           @keyframes lvl-flow {
             0% { transform: translateX(0); }
@@ -213,12 +198,10 @@ function BigHeader({ name, avatarUrl, level, points }) {
   );
 }
 
-
 /* ===== page ===== */
 export default function Lobby() {
   useViewportLock();
 
-  // scope scaling vars to this wrapper
   const lobbyRef = useRef(null);
   useLocalUiScale(lobbyRef);
 
@@ -242,14 +225,14 @@ export default function Lobby() {
   useEffect(() => {
     const prev = document.body.style.overflow;
     document.body.classList.add("is-stage");
-    document.body.style.overflow = ""; // let the CSS class control overflow
+    document.body.style.overflow = "";
     return () => {
       document.body.classList.remove("is-stage");
       document.body.style.overflow = prev || "";
     };
   }, []);
 
-  // fullscreen support
+  // fullscreen support (restored)
   const [canFs, setCanFs] = useState(false);
   const [isFs, setIsFs] = useState(false);
   useEffect(() => {
@@ -273,6 +256,28 @@ export default function Lobby() {
     catch (e) { console.debug("Exit fullscreen failed:", e); }
   };
 
+  // Auto-enter fullscreen on first user interaction (required by browsers)
+  useEffect(() => {
+    if (!canFs || isFs) return;
+
+    let fired = false;
+    const tryFs = async () => {
+      if (fired) return;
+      fired = true;
+      try { await enterFullscreen(); } catch {}
+      cleanup();
+    };
+    const cleanup = () => {
+      document.removeEventListener("pointerdown", tryFs);
+      document.removeEventListener("keydown", tryFs);
+    };
+
+    document.addEventListener("pointerdown", tryFs, { once: true });
+    document.addEventListener("keydown", tryFs, { once: true });
+
+    return cleanup;
+  }, [canFs, isFs]);
+
   // parallax
   const mvX = useMotionValue(0);
   const mvY = useMotionValue(0);
@@ -292,7 +297,9 @@ export default function Lobby() {
     if (authErr) throw authErr;
     const uid = userData?.user?.id;
     if (!uid) { setPlayerRow(null); return; }
-    const SEL = "id,name,avatar_url,points,player_status,auth_id,games_won,goals,workouts_completed,last_completed";
+    // ⬇⬇⬇ ADD streak columns here
+    const SEL =
+      "id,name,avatar_url,points,player_status,auth_id,games_won,goals,workouts_completed,current_streak,longest_streak,last_completed";
     const { data: byAuth } = await supabase.from("players").select(SEL).eq("auth_id", uid).maybeSingle();
     setPlayerRow(byAuth || null);
   }, []);
@@ -335,6 +342,9 @@ export default function Lobby() {
       wins: toNumber(playerRow?.games_won, 0),
       goals: toNumber(playerRow?.goals, 0),
       sessions: toNumber(playerRow?.workouts_completed, 0),
+      // ⬇⬇⬇ include streaks in the StatsCard data
+      currentStreak: toNumber(playerRow?.current_streak, 0),
+      longestStreak: toNumber(playerRow?.longest_streak, 0),
     };
     return { name, avatarUrl, points, level, stats };
   }, [playerRow]);
@@ -344,7 +354,6 @@ export default function Lobby() {
     520,
     BASE_W - 2 * (LAYOUT.GUTTER + LAYOUT.RAIL_W) - 2 * LAYOUT.CENTER_GAP
   );
-  const trayBottom = LAYOUT.CTA_BOTTOM + LAYOUT.CTA_H + LAYOUT.TRAY_GAP_ABOVE_CTA;
 
   return (
     <div
@@ -362,7 +371,7 @@ export default function Lobby() {
       }}
       onMouseMove={onMouseMove}
     >
-      {/* ===== FULL-BLEED BACKGROUND (outside the scaled stage) ===== */}
+      {/* ===== FULL-BLEED BACKGROUND ===== */}
       <motion.div
         initial={false}
         className="absolute inset-0 z-0 will-change-transform pointer-events-none"
@@ -388,23 +397,25 @@ export default function Lobby() {
         transition={{ duration: 18, ease: "linear", repeat: Infinity }}
       />
 
-      {/* ===== TOP BAR: Signed-in (left) • Neon (center) • News + Fullscreen (right) ===== */}
-<div className="absolute left-0 right-0 top-0 z-40 grid grid-cols-[auto_1fr_auto] items-center bg-black/40 p-3 border-b border-white/10 gap-3">
-  {/* Left: status */}
-  <div className="pl-1">
-    <span className="font-arena text-sm tracking-wide2 opacity-80">
-      {loading ? "Loading…" : playerRow ? "Signed in" : "Not signed in"}
-    </span>
-  </div>
+      {/* ===== TOP BAR ===== */}
+      <div className="absolute left-0 right-0 top-0 z-40 grid grid-cols-[auto_1fr_auto] items-center bg-black/40 p-3 border-b border-white/10 gap-3">
+        {/* Left: status */}
+        <div className="pl-1">
+          <span className="font-arena text-sm tracking-wide2 opacity-80">
+            {loading ? "Loading…" : playerRow ? "Signed in" : "Not signed in"}
+          </span>
+        </div>
 
-  {/* Center: Neon bar */}
-  <div className="justify-self-center">
-    <NeonIconBar />
-  </div>
-</div>
+        {/* Center: Neon bar */}
+        <div className="justify-self-center">
+          <NeonIconBar />
+        </div>
 
+        {/* Right: actions (kept blank intentionally) */}
+        <div className="flex items-center gap-2" aria-hidden />
+      </div>
 
-      {/* ===== SCALED STAGE (never scales above 1) ===== */}
+      {/* ===== SCALED STAGE ===== */}
       <div
         className="relative will-change-transform z-20"
         style={{
@@ -417,29 +428,32 @@ export default function Lobby() {
           transformOrigin: "top left",
         }}
       >
-        {/* Banners — shifted down to clear the neon bar */}
+        {/* Banners */}
         <div className="hidden sm:block absolute inset-0 z-35 pointer-events-none">
-          <div
-            className="pointer-events-auto"
-            style={{ transform: `translateY(${LAYOUT.BANNERS_OFFSET_Y}px)` }}
-          >
+          <div className="pointer-events-auto" style={{ transform: `translateY(${LAYOUT.BANNERS_OFFSET_Y}px)` }}>
             <EventBanners />
           </div>
         </div>
 
         {/* Header */}
         <div className="absolute inset-x-0 z-30 flex flex-col items-center gap-3" style={{ top: LAYOUT.HEADER_TOP }}>
-          <BigHeader name={computed.name} avatarUrl={computed.avatarUrl} level={computed.level} points={computed.points} />
+          <BigHeader
+            name={computed.name}
+            avatarUrl={computed.avatarUrl}
+            level={computed.level}
+            points={computed.points}
+          />
+
           {/* Center column: streak on top, free pick below */}
-<div className="flex flex-col items-center gap-5 mt-3 px-3">
-  <StreakPill   player_id={playerRow?.id} className="w-[320px] sm:w-[360px]" />
-  <FreePickPill player_id={playerRow?.id} className="w-[320px] sm:w-[360px]" />
-</div>
+          <div className="flex flex-col items-center gap-5 mt-3 px-3">
+            <StreakPill   player_id={playerRow?.id} className="w-[320px] sm:w-[360px]" />
+            <FreePickPill player_id={playerRow?.id} className="w-[320px] sm:w-[360px]" />
+          </div>
 
           <RewardCenter player_id={playerRow?.id} />
         </div>
 
-        {/* CTA (near foot) */}
+        {/* CTA */}
         <div
           className="absolute left-1/2 z-40 -translate-x-1/2 px-2"
           style={{ bottom: LAYOUT.CTA_BOTTOM, width: LAYOUT.CTA_WIDTH }}
@@ -467,13 +481,13 @@ export default function Lobby() {
           </Link>
         </div>
 
-        {/* Collectibles tray (centered between rails, above CTA) */}
+        {/* Collectibles tray */}
         <div
           id="bottom-dock"
           className="absolute left-1/2 -translate-x-1/2"
           style={{
             zIndex: 45,
-            bottom: trayBottom,
+            bottom: LAYOUT.TRAY_GAP_ABOVE_CTA + LAYOUT.CTA_BOTTOM + LAYOUT.CTA_H,
             width: trayCenterWidth,
             height: LAYOUT.TRAY_H,
             overflow: "hidden",
@@ -484,7 +498,7 @@ export default function Lobby() {
           </div>
         </div>
 
-        {/* Character behind HUD (scaled up a bit) */}
+        {/* Character */}
         <div className="absolute inset-0 z-20 pointer-events-none">
           <div
             className="absolute inset-0"
@@ -497,7 +511,7 @@ export default function Lobby() {
           </div>
         </div>
 
-        {/* Left rail — bottom-left anchored */}
+        {/* Left rail */}
         <div
           className="hidden lg:block absolute z-40"
           style={{
@@ -511,32 +525,50 @@ export default function Lobby() {
           <LeftColumnCards />
         </div>
 
-        {/* Right rail — bottom-right anchored */}
-        {/* Right rail — bottom-right anchored (inside stage to prevent clipping) */}
-<div
-  className="hidden lg:flex absolute z-40 flex-col gap-6"
-  style={{
-    right: LAYOUT.GUTTER,
-    bottom: LAYOUT.RAIL_BOTTOM,
-    width: LAYOUT.RAIL_W,
-    transform: `scale(${LAYOUT.RAIL_SCALE})`,
-    transformOrigin: "right bottom",
-  }}
->
-  <PlayerCardTile mode="auto" persist="button" orbitronClass="font-arena tracking-wide2" />
-  <StatsCard stats={computed.stats} orbitronClass="font-arena tracking-wide2" />
-</div>
+        {/* Right rail */}
+        <div
+          className="hidden lg:flex absolute z-40 flex-col gap-6"
+          style={{
+            right: LAYOUT.GUTTER,
+            bottom: LAYOUT.RAIL_BOTTOM,
+            width: LAYOUT.RAIL_W,
+            transform: `scale(${LAYOUT.RAIL_SCALE})`,
+            transformOrigin: "right bottom",
+          }}
+        >
+          <PlayerCardTile mode="auto" persist="button" orbitronClass="font-arena tracking-wide2" />
+          {/* ⬇⬇⬇ pass player_id so the StatsCard can use optional trend view */}
+          <StatsCard
+            stats={computed.stats}
+            player_id={playerRow?.id}
+            orbitronClass="font-arena tracking-wide2"
+          />
+        </div>
 
+        {/* Weekly “game news” ticker — centered above the tray, fits between rails */}
+        <div
+          className="absolute left-1/2 -translate-x-1/2 z-44 px-2 hidden md:block"
+          style={{ bottom: TICKER_BOTTOM }}
+        >
+          <div style={{ width: trayCenterWidth }}>
+            <WeeklyTrophiesWidget
+              mode="ticker"
+              minHeight={36}
+              speed={52}
+              className="rounded-lg border border-white/10 bg-black/55 backdrop-blur-sm"
+            />
+          </div>
+        </div>
 
-        {/* Mobile HUD for rails (simple bottom sheet) */}
-        <MobileRailsHUD stats={computed.stats} />
+        {/* Mobile HUD */}
+        <MobileRailsHUD stats={computed.stats} player_id={playerRow?.id} />
       </div>
     </div>
   );
 }
 
 /* ===== Mobile bottom sheet to access rails on phones ===== */
-function MobileRailsHUD({ stats }) {
+function MobileRailsHUD({ stats, player_id }) {
   const [dock, setDock] = useState(null); // "left" | "right" | null
   return (
     <div className="lg:hidden fixed inset-x-0 bottom-0 z-[65] pointer-events-none">
@@ -568,7 +600,7 @@ function MobileRailsHUD({ stats }) {
           ) : dock === "right" ? (
             <div className="flex flex-col gap-4">
               <PlayerCardTile mode="auto" persist="button" orbitronClass="font-arena tracking-wide2" />
-              <StatsCard stats={stats} orbitronClass="font-arena tracking-wide2" />
+              <StatsCard stats={stats} player_id={player_id} orbitronClass="font-arena tracking-wide2" />
             </div>
           ) : null}
         </div>
